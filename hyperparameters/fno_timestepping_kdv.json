@@ -1,0 +1,14 @@
+{
+    "\u03bb_learning_rate": 0.0818610795830042,
+    "\u03bb_optimizer": "adam",
+    "\u03bb_mask": "exponential",
+    "\u03bb_learnable": false,
+    "\u03bb_smooth_or_sharp": "smooth",
+    "seed": 0,
+    "batch_size": 16,
+    "learning_rate": 0.003711202336197662,
+    "n_blocks": 4,
+    "hidden_dim": 77,
+    "modes_max": 26,
+    "max_steps": 17
+}

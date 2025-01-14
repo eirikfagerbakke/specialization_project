@@ -1,0 +1,17 @@
+{
+    "λ_learning_rate":0.029690874115312897,
+    "λ_mask": "polynomial",
+    "λ_smooth_or_sharp": "sharp",
+    "λ_learnable": false,
+    "seed": 0,
+    "batch_size": 16,
+    "learning_rate": 0.002871643311925599,
+    "optimizer": "adam",
+    "trunk_width": 66,
+    "branch_width": 57,
+    "trunk_depth": 8,
+    "branch_depth": 9,
+    "interact_size": 24,
+    "number_of_sensors": 64,
+    "num_query_points": 722
+}

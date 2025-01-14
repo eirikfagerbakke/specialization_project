@@ -1,0 +1,15 @@
+{ 
+    "λ_learning_rate": null,
+    "λ_optimizer": "adam",
+    "λ_mask": "polynomial",
+    "λ_learnable": false,
+    "λ_shape": 64,
+    "λ_smooth_or_sharp": "smooth",
+    "seed": 0,
+    "batch_size": 16,
+    "learning_rate": 0.012452759885252077,
+    "optimizer": "adam",
+    "n_blocks": 4,
+    "hidden_dim": 90,
+    "modes_max": 8
+}

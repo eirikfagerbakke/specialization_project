@@ -1,0 +1,10 @@
+{
+    "seed": 0,
+    "batch_size": 16,
+    "learning_rate": 0.0008586050827718607,
+    "optimizer": "adam",
+    "n_blocks": 4,
+    "hidden_dim": 77,
+    "modes_max": 14,
+    "max_steps":17
+}

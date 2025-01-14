@@ -1,0 +1,13 @@
+{
+    "λ_learning_rate": 0.006761863627521914,
+    "λ_mask": "exponential",
+    "λ_smooth_or_sharp": "smooth",
+    "λ_learnable": false,
+    "seed": 0,
+    "batch_size": 16,
+    "learning_rate": 0.0006820360306315984,
+    "optimizer": "adam",
+    "n_blocks": 6,
+    "hidden_dim": 110,
+    "modes_max": 27
+}
