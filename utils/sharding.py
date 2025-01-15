@@ -1,5 +1,5 @@
 import jax
-jax.config.update("jax_enable_x64", True)
+#jax.config.update("jax_enable_x64", True)
 
 import jax.experimental.mesh_utils as mesh_utils
 import jax.sharding as jshard

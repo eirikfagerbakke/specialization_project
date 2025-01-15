@@ -1,0 +1,591 @@
+% !TeX root = ..\main.tex
+\chapter{Background on DeepONets and Neural Operators}
+
+\subsection{DeepONet}
+
+\subsubsection{The Vanilla DeepONet}
+In \sidecite{luDeepONetLearningNonlinear2021}, the authors introduce the DeepONet. 
+The vanilla DeepONet is a network that takes a discretized function, $a$, as input (evaluated at \(p\) fixed "sensors"). 
+It also takes a query point $y \in \mathcal{Y}$, which is where we want the output to be evaluated in the output domain.
+We then want the network to learn an operator $\mathcal{S}$, such that $\mathcal{S}[a](y) = u(y)$. 
+It is important to note that the query points $y$ are independent of the placements of the fixed sensors. 
+This then leads to a network architecture that maps from a finite-dimensional space to an infinite-dimensional one.
+
+The motivation behind the network architecture stems from the Universal approximation theorem 
+by Chen \& Chen \sidecite{tianpingchenUniversalApproximationNonlinear1995,luDeepONetLearningNonlinear2021}, where they originally 
+consider a shallow neural network. The authors of \sidecite{luDeepONetLearningNonlinear2021} then build a deep structure based on this. The theorem
+is reiterated below, with notation that matches ours:
+
+\begin{theorem}[Universal approximation theorem for operators]
+    \hfill\\
+    Suppose that $\sigma$ is a continuous nonpolynomial function, 
+    $X$ is a Banach Space, $\mathcal{X} \subset X, \mathcal{Y} \subset \mathbb{R}^{d+1}$ are two compact sets,
+    $\mathcal{A}$ is a compact set in $C\left(\mathcal{X}\right)$, $\mathcal{S}$ is a nonlinear continuous operator, 
+    which maps $\mathcal{A}$ into $C\left(\mathcal{Y}\right)$. Then for any $\epsilon>0$, there are positive integers $n, p, m$, 
+    constants $c_i^k, \xi_{i j}^k, \theta_i^k, \zeta_k \in \mathbb{R}, w_k \in \mathbb{R}^{d+1}, x_j \in K_1$, 
+    $i=1, \ldots, n$, $k=1, \ldots, p$, $j=1, \ldots, m$, such that
+    
+    \begin{equation}
+        \left|\mathcal{S}[a](y)-\sum_{k=1}^p 
+        \underbrace{\sum_{i=1}^n c_i^k \sigma\left(\sum_{j=1}^m \xi_{i j}^k a(x_j)+\theta_i^k\right)}_{\text {branch }} 
+        \underbrace{\sigma\left(w_k \cdot y+\zeta_k\right)}_{\text {trunk }}\right|<\epsilon
+    \end{equation}
+    
+    holds for all $a \in \mathcal{A}$ and $y \in \mathcal{Y}$.
+    \label{thm:universal_approximation_thm}
+\end{theorem}
+
+Based on \cref{thm:universal_approximation_thm}, the DeepONet is split into two parts: the \textit{trunk} and the \textit{branch} nets. 
+The trunk net takes the query point $y$ as input, and the branch net takes the discretized function $a$ as input.
+The outputs of the branch and trunk nets result in two \(p\)-dimensional vectors, which are then combined in a 
+linear fashion via a dot product. It should be noted that the DeepONet is origianlly defined for scalar-valued functions, but can
+be generalized to vector-valued functions as well, see for instance \sidecite{wangLongtimeIntegrationParametric2021}.
+
+The authors discuss some slightly varying architectures. 
+One option they suggest uses a "stacked DeepONet", meaning that we have \(p\) different branch networks, each one producing one element in the 
+branch net vector.
+Another way is to use the "unstacked DeepONet", where we use only a single network to produce all the \(p\) branch elements directly.
+Although \cref{thm:universal_approximation_thm} does not include a final bias term, the authors also discuss the possibility of 
+adding a bias to the final output of the DeepONet, to allow for a more expressive model.
+In this project, we have chosen to use the unstacked DeepONet with a bias, and we will be referring to this as the "Vanilla DeepONet".
+The predictions can then be written as
+
+\begin{equation}
+    \mathcal{S}_\theta[a](y) = \sum_{i=1}^p b_k(a) t_k(y) + b_0,
+    \label{eq:DeepONet_prediction}
+\end{equation}
+
+where $b_k(a)$ are the branch net outputs, $t_k(y)$ are the trunk net outputs, and $b_0$ is the bias term.
+The branch and trunk nets can in general be parametrized by any neural network architecture, but we have chosen to use MLPs for both in this project.
+
+The general DeepONet architecture is illustrated in \cref{fig:DeepONet}.
+
+\begin{figure}[h!]
+    \centering
+    \includesvg{DeepONet}
+    \caption[DeepONet architecture]{DeepONet architecture.}
+    \label{fig:DeepONet}
+\end{figure}
+
+\subsubsection{Evaluation of the DeepONet}
+
+The DeepONets are evaluated on single coordinates, so in order to get a prediction for the whole domain, we have to evaluate the model multiple times. 
+This can be done by for instance utilizing \texttt{vmap} in \texttt{JAX}, which vectorizes a function automatically. However, as discussed in \sidecite{luComprehensiveFairComparison2022}, we can
+make the computation even more efficient by re-using predictions from the branch and trunk nets. If we have a single input function which we want to evaluate at multiple points,
+we may evaluate the branch net once only, and combine it with the predictions of the trunk net by a matrix multiplication. The same holds for when we have multiple input functions and a single query point,
+or when we have multiple input functions and multiple query points.
+
+\subsubsection{DeepONet extensions}
+
+There have been made several extensions to the vanilla DeepONet architecture. One noteable example includes the POD-DeepONet, 
+introduced in \sidecite{luComprehensiveFairComparison2022}, where some of the authors of the original DeepONet paper 
+discuss an enhancement of their original architecture. 
+The POD-DeepONet uses a pre-computed POD-basis, denoted by \(\{\phi_k\}\), generated from the training data, in place of the trunk net.
+Instead of learning the basis for the query points, these are now pre-computed, and the network only learns the branch net parameters.
+The output can then be written as 
+\begin{equation}
+    \mathcal{S}_\theta[a](y) = \sum_{i=1}^p b_k(a) \phi_k(y) + \phi_0(y).
+    \label{eq:POD-DeepONet}
+\end{equation}
+With the improved results seen in \cite{luComprehensiveFairComparison2022}, this could be an interesting extension to explore. However, we have chosen
+to focus on the original DeepONet architecture as it is more general and expressive.
+
+One criticism of the DeepONet, is that it is not able to take input functions at any point; the number of "sensors" and their placement remains fixed.
+A possible extension which allows for variable input in the branch-net has been discussed in \sidecite{prasthoferVariableInputDeepOperator2022, hoopCostAccuracyTradeOperatorLearning2022}, 
+where they develop an enhanced architecture which allows for a varying number and placement of sensors. 
+In this project, we have however chosen to generate the data such that the input functions are evaluated at a fixed set of sensors, as originally proposed in \cite{luDeepONetLearningNonlinear2021}.
+
+Lastly, we note the "Modified DeepONet", introduced in \sidecite{wangImprovedArchitecturesTraining2022a}. 
+The authors of \cite{wangImprovedArchitecturesTraining2022a} argue that their
+proposed architecture should help the inputs propagate throughout the network, and their modification empirically led to more 
+accurate predictions in all examples discussed in \cite{wangImprovedArchitecturesTraining2022a}.
+In addition, another criticism of the DeepONet is that the input function and the query point is combined in a linear fashion, which leads to a linear 
+approximation of the \textit{operator} that we want to learn \sidecite{kovachkiNeuralOperatorLearning2024}.
+The Modified DeepONet circumvents this by creating encoders for both the branch and trunk nets, which are combined throughout
+the networks. The predictions are now written as
+
+\begin{align*}
+    B_E &= \sigma(W_a a + b_a), \qquad\qquad\qquad\qquad T_E = \sigma(W_yy + b_y), \\
+    B^{(1)} &= \sigma(W_a^{(1)} a + b_a^{(1)}), \qquad\qquad\qquad T^{(1)} = \sigma(W_y^{(1)}T + b_y^{(1)}), \\
+    B^{(l+1)} &= (1- \sigma(W_a^{(l)}B^{(l)}+b_a^{(l)})) \odot B_E + \sigma(W_y^{(l)}T^{(l)}+b_y^{(l)}) \odot T_E\\
+    T^{(l+1)} &= (1- \sigma(W_y^{(l)}T^{(l)}+b_y^{(l)})) \odot B_E + \sigma(W_a^{(l)}T^{(l)}+b_a^{(l)}) \odot T_E\\
+    B^{(L)} &= \sigma(W_a^{(L)} B^{(L-1)} + b_u^{(L)}), \qquad\qquad T^{(L)} = \sigma(W_y^{(L)}T^{(L-1)} + b_y^{(L-1)}), \\
+    \mathcal{S}_\theta[a](y) &= \langle B^{(L)}, T^{(L)}\rangle + b_0,
+\end{align*}
+
+where \(B_E\) and \(T_E\) are the encoders for the branch and trunk nets, respectively, and \(\sigma\) is the activation function.
+The \(W\) and \(b\) are the weights and biases of the networks, and the \(\odot\) denotes element-wise multiplication.
+\(B^{(l)}\) and \(T^{(l)}\) are the outputs of the branch and trunk nets at layer \(l\), respectively.
+Finally, we also allow for a final bias term, \(b_0\), to be added to the output.
+
+This network architecture is illustrated in \cref{fig:Modified_DeepONet}.
+
+\begin{figure}[h!]
+    \centering
+    \includesvg{Modified_DeepONet}
+    \caption[Modified DeepONet architecture]{Modified DeepONet architecture, based on diagram in \cite{wangImprovedArchitecturesTraining2022a}.}
+    \label{fig:Modified_DeepONet}
+\end{figure}
+ 
+Motivated by the results seen in \cite{wangImprovedArchitecturesTraining2022a}, we have chosen to also implement and compare this modified architecture agains the vanilla DeepONet.
+
+\subsection{Neural Operators}
+
+A different and more recent approach to operator learning is discussed in \sidecite{kovachkiNeuralOperatorLearning2024}.
+While the (vanilla) DeepONets take discretized functions as inputs, and therefore technically map from a finite dimensional space to a 
+function space, the Neural Operators are defined as mappings between function spaces. In this section, we will start by quickly reiterating
+the building blocks of a general Neural Operator, as they are defined in \cite{kovachkiNeuralOperatorLearning2024}.
+
+The network architechture can be seen as an extension of MLPs to function spaces. Instead of the traditional fully-connected layers, 
+the networks employ "integral kernel operators", which similarly are meant to capture the global features through an integral over the domain:
+
+\begin{definition}[Integral Kernel Operators]
+    \begin{equation}
+        (\mathcal{K}v_l)(z) = \int_D \kappa^{(l)}(z,\bar{z}) v_l(\bar{z}) \, d \nu_l(\bar{z}). 
+        \labdef{kernel_operator}
+    \end{equation}
+\end{definition}
+
+Here, \(v_l\) is the input function, \(\kappa^{(l)}\) is the kernel function, and \(d \nu_l\) is the measure over the domain \(D\).
+We write \(z\) to denote the inputs to the functions, as the input to the model can vary. Later, we will investigate how to handle the time dimension, and
+\(z\) may represent either only a spatial coordinate, \(z=x\), or it may refer to points in the spatial-temporal domain \(z=y=(x,t)\).
+
+The paper also defines two other alternative kernel integral operator definitions, but we will use the basic form defined in \refdef{kernel_operator} with \( d \nu_l\) being the Lebesgue measure.
+In addition to the integral kernel operators, the article also defines three additional pointwise operators.
+
+\begin{enumerate}
+    \item A lifting layer, \(\mathcal{P}\), which lifts the input function's codimension: \(\{a : D \to \mathbb{R}^{d_a}\} \mapsto \{v_0 : D \to \mathbb{R}^{d_{v_0}}\}\).
+    \item Linear layers, \(\mathcal{W}_l\), which are the local transformations of each Neural Operator layer.
+    \item A projection layer, \(\mathcal{Q}\), which maps back to the desired codimension: \(\{v_L : D' \to \mathbb{R}^{d_{v_L}}\} \mapsto \{u : D' \to \mathbb{R}^{d_u}\}\).
+\end{enumerate}
+
+It is also usual to incorporate bias terms in neural networks. In the context of neural operators, these are included as bias \textit{functions}, \(b_l(z)\).
+
+This all comes together as 
+
+\begin{definition}[Neural Operator \(\mathcal{S}_\theta\)]
+    \begin{equation}
+        \mathcal{S}_\theta =  \mathcal{Q} \circ \sigma_L (\mathcal{W}_L + \mathcal{K}_L + b_L) \circ \dots \circ \sigma_1 (\mathcal{W}_1 + \mathcal{K}_1 + b_1)\circ \mathcal{P}
+        \label{eq:neural_operator}
+    \end{equation}
+\end{definition}
+
+where \(\sigma_l\) denotes non-linear activation functions. A visualization of the Neural Operator architecture can be seen in \cref{fig:Neural_Operator}.
+
+\begin{figure}[h!]
+    \centering
+    \includesvg{Neural_Operator}
+    \caption[Neural Operator architecture]{Neural Operator architecture.}
+    \label{fig:Neural_Operator}
+\end{figure}
+
+
+The methods are then implemented by using discretized versions of the operators and functions.
+The local linear operators, \(\mathcal{W}_l\), are usually implemented as either \(1\times1\) convolutions or by the multiplication with a matrix \(W_l \in \mathbb{R}^{d_{v_{l}} \times d_{v_{l-1}}}\) \sidecite{kossaifiLibraryLearningNeural2024,luComprehensiveFairComparison2022}.
+In this project, we have chosen to do the latter.
+
+The bias functions are usually implemented simply as a learnable vector, \(b_l \in \mathbb{R}^{d_{v_l}}\) \sidecite{kossaifiLibraryLearningNeural2024}. This means that the we have a constant function which does not depend on \(z\). 
+Other alternatives could be to parametrize it by a shallow neural network or with coefficients multiplied with a fixed basis.
+
+Lastly, \cite{kovachkiNeuralOperatorLearning2024} 
+define three different suggestions for discretized integral kernel operators: the "Graph Neural Operator" (GNO), the "Low-rank Neural Operator" (LNO) and the 
+"Fourier Neural Operator" (FNO). 
+Especially the FNO has garnered a lot of attention for its good results on PDEs and its 
+efficiency by utilizing the fast Fourier transform (FFT). This is done by assuming a kernel of the form \(\kappa(z,\bar{z})=\kappa(z-\bar{z})\) 
+and using the convolution theorem of the Fourier Transform \cite{kovachkiNeuralOperatorLearning2024}:
+
+\begin{equation}
+    \mathcal{K}(v)(z) 
+    = \int_D \kappa(z-\bar{z} ) v(\bar{z} ) \, d\bar{z} 
+    = \mathcal{F}^{-1} (\mathcal{F}(\kappa) \mathcal{F}(v))(z)
+    = \mathcal{F}^{-1} (R \mathcal{F}(v))(z),
+\end{equation}
+
+where \(\mathcal{F}(\kappa)\) is parametrized directly by a matrix \(R\) of learnable weights.
+The Fourier transform and its inverse are then replaced by the FFT and the inverse fast Fourier transform (IFFT), leading to an efficient approximation of the integral kernel operator \sidecite{kovachkiNeuralOperatorLearning2024}.
+
+In this project, we have decided to limit our exploration of the Neural Operators to the FNO.
+
+\subsubsection{Appending the grid to the input}\label{sec:appending_grid}
+
+From the definition of the Neural Operators, we see that there is no need to give the grid that the input function is evaluated on as input to the network.
+This is however often done in practice by appending the grid to the input function, and usually gives better results \sidecite{kovachkiNeuralOperatorLearning2024,luComprehensiveFairComparison2022}.
+This essentially means that we now view our input function as a vector-valued function, which also outputs the grid points.
+If we for instance add the spatial coordinates to our input function \(a : x \mapsto a(x)\), we can instead evaluate \(v : x \mapsto (x, a(x))\).
+We do this for all of the FNO-based models considered.
+
+\subsubsection{Incorporating the time dimension in the FNO}
+
+As was also discussed in \sidecite{luComprehensiveFairComparison2022}, the FNO requires \(D\) and \(D'\) to be from the same domain.
+Since we are trying to learn the mapping from an initial condition, at time \(t=0\), to the solution for \(t \in [0, T]\), this has to be accounted for.
+In our problem setting, we have \(D = \mathcal{X}\) and \(D' = \mathcal{Y} = \mathcal{X} \times \mathcal{T}\).
+We present three possible solutions:
+
+\textbf{Method 1: Timestepping.} We learn an operator \(\tilde{\mathcal{S}_\theta} : u(x, t) \mapsto u(x,t + \Delta t)\),
+where \(\Delta t\) is a fixed step size. We can then iteratively apply this operator to get predictions for discrete time points.
+In order to make this method continuous in time, we will have to interpolate between the discrete time points.
+This method performs the FFT in space only, and will be referred to as "\texttt{FNOTimestepping}". This method was also mentioned 
+in \sidecite{kovachkiNeuralOperatorLearning2024, luComprehensiveFairComparison2022}.
+
+\textbf{Method 2: Extending the domain.} We extend the domain of our initial condition to \(\mathcal{Y}\), by viewing it as a function that is constant in time, \(a(x,t)=a(x)\).
+The integral kernel operator will then act on the whole spatial-temporal domain, meaning that we need to perform the 2D FFT.
+This method will therefore be referred to as "\texttt{FNO2d}". The method was also discussed in \sidecite{luComprehensiveFairComparison2022}.
+
+\textbf{Method 3: Query points in time.} We introduce here a third method that, as far as we know, has not been discussed in the literature before. In this method, we also view \(a\) as a function on 
+\(\mathcal{Y}\) that is constant in time, but we only learn the spatial mapping. 
+The time coordinate then essentially acts as a "query point", telling us where in the temporal output domain we want the prediction.
+With this method, it is necessary to append the time coordinate to the input function, as discussed in \cref{sec:appending_grid}, to allow the network to differentiate between different time points.
+The input function is then \(v : x \mapsto (a(x), t)\), where \(t\) is the time point we want to evaluate the solution at.
+We can also add the spatial grid points to the input as before.
+This method will be referred to as "\texttt{FNO1d}".
+
+\subsection{A brief comparison between the different approaches}
+
+Both the DeepONet and the Neural Operators are shown to be universal approximators of operators. 
+Specifically, the Neural Operators are shown to uniformly approximate any continuous operator defined on a compact set of Banach spaces in 
+\sidecite{kovachkiNeuralOperatorLearning2024}, and from before we have the universal approximation theorem for the DeepONet seen in \cref{thm:universal_approximation_thm}.
+This property does not apply to the traditional neural networks \cite{kovachkiNeuralOperatorLearning2024}, and is a big motivation for using DeepONets or Neural Operators for operator learning.
+Even though the DeepONet is a universal approximatior, it combines the branch and trunk nets in a linear fashion, leading to a linear approximation of the operator . The Neural Operators, on the other hand, are non-linear approximations to the operator, which in general should allow for a more expressive model \cite{kovachkiNeuralOperatorLearning2024}.
+
+The Neural Operators do however encompass a property that sets them apart from the DeepONets. They are \textit{discretization-invariant}, a property proposed in \cite{kovachkiNeuralOperatorLearning2024}. 
+According to \cite{kovachkiNeuralOperatorLearning2024}, they are also the only known class of methods to encompass this property.
+A discretization-invariant model is defined by the following properties \cite{kovachkiNeuralOperatorLearning2024}:
+
+\begin{definition}[Discretization-invariant operator]
+    \hfill\\
+    A discretization-invariant model satisfies the following properties:
+    \begin{enumerate}
+        \item acts on any discretization of the input function, i.e. accepts any set of points in the input domain,  
+        \item can be evaluated at any point of the output domain,  
+        \item converges to a continuum operator as the discretization is refined.
+    \end{enumerate}
+    \labdef{discretization_invariant_operator}
+\end{definition}
+
+In comparison, the vanilla DeepONet fulfills the second property, but it does not fulfill the first or third. 
+The Vanilla DeepONet cannot take the input function at any point, as the branch net limits the input to the fixed "sensors".
+As discussed previously, there have however been made some generalizations which circumvent this \sidecite{hoopCostAccuracyTradeOperatorLearning2022,kovachkiNeuralOperatorLearning2024,prasthoferVariableInputDeepOperator2022}.
+
+The DeepONet does not fulfill the third property, as its predictions does not converge with a finer grid size. Since the network takes query points, rather than a grid, the model's prediction at the same query point will not change with the mesh size.
+This contrasts with the Neural Operators, which take values on a grid, and the predictions converge as the step size decreases \cite{kovachkiNeuralOperatorLearning2024}.
+
+Another big difference between the DeepONet and the Neural Operators, is in the inputs and outputs of the methods. As stated previously, 
+the DeepONet takes a query point \(y\) from the output domain and predicts \(\mathcal{S}_\theta[a](y) \approx u(y)\big|_a\). The inputs and outputs of the DeepONet (and the "Modified" variant) can then be written as
+
+\begin{equation}
+    \text{DeepONet} : 
+    \underbrace{\mathbb{R}^{N}}_{\substack{\text{branch input,} \\ \text{\(a(x)\) at \(N\) sensors.}}}
+    \times 
+    \underbrace{\mathbb{R}^{d+1}}_{\substack{\text{trunk input,} \\ \text{query point \(y\).}}} 
+    \to 
+    \underbrace{\mathbb{R}}_{\substack{\text{prediction,} \\ \text{\(u\) at \(y\)}}}.
+\end{equation}
+
+The Neural Operators do not take query points, but rather directly compute the prediction at all given input points, 
+\(\mathcal{S}_\theta[a] \approx u\). The number of "input points" depends on the method we use. Below we list the mappings for the different methods we have considered:
+\begin{equation}
+    \text{FNO2d} : 
+    \underbrace{\mathbb{R}^{N_x \times N_t}}_{\substack{\text{initial condition,} \\ \text{\(a(x,t)=a(x)\)}}}
+    \to 
+    \underbrace{\mathbb{R}^{N_x \times N_t}}_{\substack{\text{prediction,} \\ \text{\(u(x,t)\)}}}
+\end{equation}
+
+\begin{equation}
+    \text{FNO1d} : 
+    \underbrace{\mathbb{R}^{N_x}}_{\substack{\text{initial condition,} \\ \text{\(a(x)\)}}} \times \underbrace{\mathbb{R}}_{\substack{\text{time point \(t^*\)}}}
+    \to 
+    \underbrace{\mathbb{R}^{N_x}}_{\substack{\text{prediction,} \\ \text{\(u(x,t^*)\)}}}
+\end{equation}
+
+\begin{equation}
+    \text{FNOTimeStepping} : 
+    \underbrace{\mathbb{R}^{N_x}}_{\substack{\text{input function,} \\ \text{\(u(x,t^*)\)}}} 
+    \to 
+    \underbrace{\mathbb{R}^{N_x}}_{\substack{\text{prediction,} \\ \text{\(u(x,t^*+\Delta t)\)}}}
+\end{equation}
+
+This difference in input will also affect both the loss function and how we can compute derivatives. 
+For the DeepONets we are able to sample the query points randomly, so we can then compute the loss function by evaluating the network at these points only.
+This also applies to the FNO1d approach, where we can sample the time points randomly. The same holds for the derivatives, where we for the DeepONets can compute them directly at the query points only.
+The query points of the DeepONet therefore makes it more flexible in general. To evaluate on a grid, we simply vectorize over the grid points.
+We will discuss both the loss function used, and the computation of the derivatives, in more detail in the following sections.
+
+\chapter{Operator Learning for Hamiltonian PDEs} \label{sec:HINO_theory}
+
+\subsection{Hamiltonian PDEs}
+
+A Hamiltonian PDE can be written on the form 
+\begin{equation}
+    u_t = \mathcal{G} \frac{\delta \mathcal{H}}{\delta u}
+    \label{eq:hamiltonian_pde}
+\end{equation}
+
+where \(\mathcal{G}\) is a Hamiltonian operator, \(\mathcal{H} : \mathcal{U} \to \mathbb{R}\) is the Hamiltonian functional of the system, and \(\frac{\delta \mathcal{H}}{\delta u}\) is the variational derivative \cite{leimkuhlerSimulatingHamiltonianDynamics2005, olverApplicationsLieGroups1986}.
+In order for \(\mathcal{G}\) to be a Hamiltonian operator, it needs to be a constant linear operator, and it also has to satisfy two conditions on its Poisson bracket. These are the conditions of skew-symmetry and the Jacobi identity. We skip the details here, but refer the reader to \cite{olverApplicationsLieGroups1986}.
+We will in our project assume that \(\mathcal{G}=-\partial_x\), which does indeed satisfy the conditions of a Hamiltonian operator.
+The Hamiltonian functional can furthermore be written as \[\mathcal{H} = \int_{\mathcal{X}} F(x; u, u_x, u_{xx}, \ldots) dx,\] where \(F : \mathcal{U} \to \mathbb{R}\) is the \textit{energy density function} \cite{olverApplicationsLieGroups1986,tanakaNeuralOperatorsMeet2024,celledoniPreservingEnergyResp2012}.
+
+We can then follow the formula in \sidecite{tanakaNeuralOperatorsMeet2024,  olverApplicationsLieGroups1986, celledoniPreservingEnergyResp2012}, which states that 
+
+\begin{equation}
+    \frac{\delta \mathcal{H}[\vect{u}]}{\delta u_m} = \frac{\partial F}{\partial u_m}  - \sum_{d=1}^{D}\left[ \frac{\partial}{\partial x_d} \frac{\partial F}{\partial u_{m,d}} \right] + \ldots
+    \label{eq:variational_derivative}
+\end{equation}
+
+where \(u_m\) is the \(m\)-th component of \(\vect{u}\), \(x_m\) is the \(m\)-th component of the spatial coordinate, and \(F\) is the energy density function of the Hamiltonian. \(u_{m,d}\) refers to the derivative of \(u_m\) with respect to \(x_d\).
+
+\subsection{The Energy-consistent Neural Operator}
+
+There are now two main approaches to satisfying the constraint of \cref{eq:hamiltonian_pde} in our network: hard or soft constraints.
+The easiest of the two to employ, is usually the soft constraints, where we add a term to the loss function that we wish to minimize.
+This term then pushes the network towards satisfying the constraints, but does not necessarily guarantee that they are satisfied.
+Hard constraints, on the other hand, enforce the constraints directly, thereby ensuring that they are exactly satisfied \sidecite{karniadakisPhysicsinformedMachineLearning2021}.
+
+In \sidecite{tanakaNeuralOperatorsMeet2024}, the authors introduced the "Energy-consistent Neural Operator" (ENO).
+This network consists first of an MLP, which takes a stacked vector of a discretized initial condition \(a(x)\) and a query point \((x,t)\) as input. It then outputs an approximation to \(\mathcal{S}[a](x,t)=u(x,t)\).
+They then compute derivatives \(u_t\) and \(u_x, u_{xx}, \ldots\) by automatic differentiation. These values are then the inputs to another neural network, \(F_\phi\), which parametrizes the energy density function \(F\).
+They then proceed by computing the right-hand side of \cref{eq:hamiltonian_pde}, again through automatic differentiation, by using the variational derivative of the Hamiltonian, as seen in \cref{eq:variational_derivative}. 
+
+The ENO is "informed" about the Hamiltonian structure of the PDE, in the sense that \(\dot{u}_m^\theta\) and \(\mathcal{G} \frac{\delta \mathcal{H}_\phi[\vect{u}^\theta]}{\delta u_m^\theta}\) are 
+pushed to equality by adding a penalty term to the loss function. This is a "soft constraint", as the network is not 
+guaranteed to satisfy \cref{eq:hamiltonian_pde} exactly.
+This follows the same general strategy as we see in the well-known physics-informed neural networks (PINNs) \sidecite{raissiPhysicsinformedNeuralNetworks2019}.
+
+It should also be noted that the ENO, as it was introduced in \cite{tanakaNeuralOperatorsMeet2024}, does not use the DeepONet or a Neural Operator in its approach, but rather an MLP.
+They do mention the DeepONet and FNO, but as we shall see, the inclusion of the FNO in the architectur is in particular not straightforward.
+The MLP is not a universal approximator of operators, and is not discretization-inveriant.
+We therefore wish to investigate how we can implement the architecture with the use of the DeepONets and the FNOs, and compare how well these perform, in addition to investigating the use of a hard constraint.
+
+\subsection{The Hamiltonian Operator Network}
+
+We now propose an extension to the ENO, which uses the DeepONet or the FNO as the operator network, in addition to a hard-constrained approach.
+Rather than using the predictions from the operator network, we could instead impose \(\dot{u}_m^\theta = \mathcal{G} \frac{\delta \mathcal{H}_\phi[\vect{u}^\theta]}{\delta u_m^\theta}\) directly.
+We then have a network which predicts temporal derivatives that are guaranteed to preserve the approximated Hamiltonian functional, \(\mathcal{H}_\phi = \int_{\mathcal{X}}F_\phi(u^\theta, u_x^\theta, \ldots) dx\). 
+To obtain the final predictions for \(u\), we can then integrate \(\dot{u}_m^\theta\) in time:
+
+\begin{equation}
+    u_m^\theta(x,t) = u_m^\theta(x,0) + \int_0^t \mathcal{G} \frac{\delta \mathcal{H}_\phi[\vect{u}^\theta]}{\delta u_m^\theta} d\bar{t}.
+    \label{eq:hard_constrained_approach}
+\end{equation}
+
+This approach follows a similar structure as the one proposed in \cite{greydanusHamiltonianNeuralNetworks2019} for ODEs,
+but in this case for PDEs used with the Operator Learning framework.
+
+As we cannot find the exact antiderivative to \(\mathcal{G} \frac{\delta \mathcal{H}_\phi[\vect{u}^\theta]}{\delta u_m^\theta}\), we will have to approximate it by a numerical method.
+To this end, we here list three possible methods to approximate the antiderivative:
+
+\begin{enumerate}
+    \item \textbf{Cumulative integration:} This is the simplest method where we first predict values for the integrand on grid points. 
+    We then cumulatively integrate, using for instance Simpson's rule or the trapezoid rule. This can easily be done with \texttt{cumulative\_trapezoid} or \texttt{cumulative\_simpson} functions,
+    found in libraries such as \texttt{scipy} or \texttt{quadax}. This approach does however introduce discretization errors which accumulate over time, and is therefore not the most suitable approach.
+    \item \textbf{Exact antiderivative of interpolated function:} With this method, we first predict the integrand on grid points, and then interpolate the function.
+    We can then find the exact antiderivative of the interpolated function, and evaluate it at the desired time points. This is easily done by leveraging functions such as \texttt{interp1d} in \texttt{scipy} or
+    the \texttt{interpax} library. If we use sufficiently many points, and use a suitable interpolation method, this should give better results than the cumulative integration as we avoid errors that accumulate over time.
+    \item \textbf{ODE integration:} A final approach is to numerically integrate by solving the initial value problem
+    \[f(u_m, t) = \mathcal{G} \frac{\delta \mathcal{H}_\phi[\vect{u}]}{\delta u_m}, \qquad u_m(x, 0) =  u_m^\theta(x,0).\]
+    We should also solve this using a symplectic integrator, which will preserve a discrete version of the \textit{learned} Hamiltonian.
+    Note that we have a directly integrable ODE, as we know the right-hand sides direct dependence on \(t\), and we therefore do not need to solve any implicit equations.
+    This method should be the preferred one.
+\end{enumerate}
+
+\section{Computing the functional derivative}
+
+In order to compute our model's prediction for the right-hand side of \cref{eq:hamiltonian_pde}, we need to compute the functional derivative of the Hamiltonian.
+
+
+In this project, we will only consider scalar-valued functions in one spatial dimension. 
+In addition, we assume that our energy density function \(F\) only depends on \(u\) and \(u_x\). The formula then simplifies to
+
+\begin{equation}
+    \frac{\delta \mathcal{H}[u]}{\delta u} = \frac{\partial F}{\partial u}  -  \frac{\partial}{\partial x} \frac{\partial F}{\partial u_x}.
+    \label{eq:variational_derivative_simple}
+\end{equation}
+
+We will further assume that the operator \(\mathcal{G}\) is \(-\partial_x\). The right-hand side of \cref{eq:hamiltonian_pde} can then be written as
+
+\begin{equation}
+    \mathcal{G}\frac{\delta \mathcal{H}[u]}{\delta u} =  -\frac{\partial}{\partial x}\frac{\partial F}{\partial u}  +  \frac{\partial^2}{\partial x^2} \frac{\partial F}{\partial u_x}.
+    \label{eq:rhs_pde_simplified}
+\end{equation}
+
+As \(F\) depends on \(x\) through \(u\) and \(u_x\), we can either consider total derivatives and compute them directly, or we can use the chain rule.
+
+For the approach using the chain rule, we note that the chain rule for multivariable functions gives 
+
+\begin{align}
+    \frac{\partial}{\partial x}\frac{\partial F}{\partial u} &= \frac{\partial^2 F}{\partial u^2} u_x + \frac{\partial^2 F}{\partial u \partial u_x} u_{xx} \nonumber\\
+    \frac{\partial}{\partial x}\frac{\partial F}{\partial u_x} &= \frac{\partial^2 F}{\partial u_x \partial u} u_x + \frac{\partial^2 F}{\partial u_x^2} u_{xx}.\label{eq:chain_rule1}
+\end{align}
+
+We now differentiate \cref{eq:chain_rule1} with respect to \(x\) once again, which after a thourough calculation gives
+
+\begin{equation}
+    \frac{\partial^2}{\partial x^2}\frac{\partial F}{\partial u_x}  = 
+    \frac{\partial^2 F}{\partial u \partial u_x} u_{xx}
+    +\frac{\partial^2 F}{\partial u_x^2} u_{xxx}
+    +\frac{\partial^3 F}{\partial u_x u^2} u_x^2
+    +2\frac{\partial^3 F}{\partial u_x^2 \partial u} u_x u_{xx}
+    +\frac{\partial^3 F}{\partial u_x^3}  u_{xx}^2.
+    \label{eq:chain_rule2}
+\end{equation}
+
+The full expression for the right-hand side of \cref{eq:hamiltonian_pde} using the multivariable chain rule is then 
+
+
+\begin{align}
+    \mathcal{G}\frac{\delta \mathcal{H}[u]}{\delta u} &=
+    -\left(\frac{\partial^2 F}{\partial u^2} u_x + \frac{\partial^2 F}{\partial u \partial u_x} u_{xx}\right) \nonumber\\
+    &+
+    \frac{\partial^2 F}{\partial u \partial u_x} u_{xx}
+    +\frac{\partial^2 F}{\partial u_x^2} u_{xxx}
+    +\frac{\partial^3 F}{\partial u_x u^2} u_x^2
+    +2\frac{\partial^3 F}{\partial u_x^2 \partial u} u_x u_{xx}
+    +\frac{\partial^3 F}{\partial u_x^3}  u_{xx}^2. \nonumber\\
+    \label{eq:hamiltonian_chain_rule}
+\end{align}
+
+
+\section{Computing spatial and temporal derivatives}
+
+How should one go about computing spatial and temporal derivatives in the context of DeepONets and Neural Operators?
+As we want the outputs of our network to satisfy \cref{eq:hamiltonian_pde}, we will need to compute
+derivatives of the output \(u^\theta = \mathcal{S}_\theta[a]\) with respect to \(x\) and \(t\).
+
+One strategy is to simply use traditional numerical methods, such as finite differences or FFT-based differentiation. 
+However, this introduces discretization errors, as well as requiring sufficiently small step sizes and equidistant grids.
+A more elegant and direct approach might be to utilize automatic differentiation, which can compute derivatives exactly down to floating point precision.
+
+For the DeepONets, which take query points as input, this is possible, and we simply compute the derivatives as e.g.
+
+\begin{equation}
+    u_t^\theta = \frac{\partial \mathcal{S}_\theta}{\partial t}[a](x,t).
+    \label{eq:temporal_derivative_DON}
+\end{equation}
+
+However, the situation for the Neural Operators is quite different. As discussed previously, these networks do not take query points, but 
+are defined to map between function spaces directly.
+Luckily, two possible solutions have been discussed in \sidecite{liPhysicsInformedNeuralOperator2023}, in addition to 
+the use of traditional numerical differentiation methods. 
+
+The solution proposed in \cite{liPhysicsInformedNeuralOperator2023} is to use the chain rule, but only for the very last layers in the neural operator.
+This is not only efficient, but if we were to backpropagate through the whole network, we would in the end reach the input layer, and we do not in general know the derivative of the initial condition.
+
+We will now illustarte how this works for the spatial derivatives by ignoring the model's dependence on \(t\). We start by writing our resulting function \(u(x)\) as it depends on the output of the previous 
+layer, \(v_L(x)\):
+
+\begin{equation}
+    \begin{aligned}
+        u(x) &= Q(\sigma(v_L(x))),\\
+        v_L(x) &= \mathcal{K}_L(v_{L-1}(x)) + \mathcal{W}_L(v_{L-1}(x))  + b_L(x).
+    \end{aligned}
+\end{equation}
+
+We now use the chain rule \textit{once}, and observe the following:
+
+\begin{equation}
+    \frac{d u}{d x} = 
+    \frac{d \mathcal{Q}}{d v_L}
+    \left(\frac{d \mathcal{K}_L(v_{L-1})}{dx} + \frac{d \mathcal{W}_L(v_{L-1})}{dx} +\frac{d b_L}{dx}\right).
+\end{equation}
+
+From the definition of the integral kernel operator, \refdef{kernel_operator}, we see that we can compute the exact derivative of \(\mathcal{K}_L(v_{L-1}(x))\) with respect to \(x\) 
+directly, without iterating further through the network. Following the definition of the kernel operator, we have in general that
+\begin{equation}
+    \frac{d \mathcal{K} (v)}{dx} = \int_D \frac{\partial \kappa(x,y)}{\partial x} v(y) \, d \nu(y).
+\end{equation}
+
+Since we use the Fourier Neural Operator, the derivatives are given by 
+
+\begin{equation}
+    \frac{d \mathcal{K} (v)}{dx} = \frac{1}{k_{max}} \sum_{k=0}^{k_{max}} (R_k (\mathcal{F} v_{L-1})_k)  \frac{d}{dx}  \exp{\frac{i 2 \pi k}{D}(x)} 
+\end{equation}
+
+and from \(\frac{d}{dx} \exp{\frac{i 2 \pi k}{D}(x)}=\frac{i 2 \pi }{D}\exp{\frac{i 2 \pi k}{D}(x)}\), we can simply compute the derivatives as
+
+\begin{equation}
+    \frac{d \mathcal{K} (v)}{dx} = \mathcal{F}^{-1} \left( \frac{i 2 \pi }{D} R \mathcal{F} (v) \right),
+\end{equation}
+
+where \(\mathcal{F}\) and \(\mathcal{F}^{-1}\) are the FFT and IFFT, respectively \sidecite{liPhysicsInformedNeuralOperator2023}. 
+
+As we do not in general know directly how the bypass-layer, \(\mathcal{W}_L(v_L(x))\), depends on \(x\), we simply remove this term, as suggested in \cite{liPhysicsInformedNeuralOperator2023}.
+
+Lastly, the bias function is easily differentiated, as it only depends on \(x\). Lastly, \(\frac{d \mathcal{Q}}{d v_L}\) can be computed by automatic differentiation. Furthermore, since \(\mathcal{Q}\) is a pointwise operator, we can do this efficiently by
+computing the gradient of \(\sum_j Q(v_L)_j\) with respect to \(v_L\), rather than computing the full Jacobian. This is a simple "trick" that we have utilized in multple parts of the implementation.
+
+We can now either compute the derivatives at query points, which is the first method suggested in \cite{liPhysicsInformedNeuralOperator2023}, or we can use the second method, which is to simply alter the forward pass of the network slighly, to account for the \(\frac{i 2 \pi }{D}\)-term that arises in the differentiation.
+In this project, we have chosen to do the latter, as it is more efficient.
+
+WE HAVE VERIFIED THE DERIVATIVES IN ...
+
+\subsection{Computing the Hamiltonian PDE right-hand side}
+We now wish to compute \cref{eq:variational_derivative_simple} for the networks. For the DeepONets, we can use automatic differentiation directly to compute the total derivatives of the terms in the energy density function.
+The implementation in \texttt{JAX} then follows the formula very closely:
+
+\begin{lstlisting}[language=Python, caption=Computing the Hamiltonian PDE right-hand side for the DeepONets][H]
+def __call__(self, a, x, t):
+    """
+    Input:
+        x: scalar
+        t: scalar
+    Output:
+        GdH(x,t) (= u_t(x,t)): scalar, at x=x and t=t
+    """
+    
+    u = lambda x : self.u.decode_u(self.u(a, x, t))
+    u_x = lambda x : grad(self.u, 1)(a, x, t)*self.u.u_std/self.u.x_std
+    
+    dFdu = grad(self.F)
+    dFdu_x = lambda x : grad(self.F, 1)(u(x), u_x(x))
+    
+    dH = lambda x : dFdu(u(x), u_x(x)) - grad(dFdu_x)(x)/self.u.x_std
+    GdH =  -grad(dH)(x)/self.u.x_std
+    
+    return GdH
+\end{lstlisting}
+Note that we have included the scalings of the equations, as we have discussed in \cref{sec:scaling}.
+
+For the Neural Operators, we cannot compute the derivatives through automatic differentiation directly, as shown by the discussion in the previous section.
+Instead we can compute the formula according to \cref{eq:hamiltonian_chain_rule}, and use the method suggested earlier to compute the spatial derivatives of \(u^\theta\).
+We have here chosen to highlight the implementation in \texttt{JAX} for the \texttt{FNO1d} model. The implementation for the other FNO-based models are however very similar, but
+vary slightly in their inputs and outputs. For details, refer to the code in the repository linked in the appendix.
+
+\begin{lstlisting}[language=Python, caption=Computing the Hamiltonian PDE right-hand side for the FNO1d model][H]
+def __call__(self, a, x, t):
+    """
+    Input:
+        x: (Nx,) array
+        t: scalar
+    Output:
+        GdH(x,t) (= u_t(x,t)): (Nx,) array at t=t
+    """
+
+    u = self.u.decode_u(self.u(a, x, t)) # (Nx,)
+    u_x = self.u.u_x(a,x,t) # (Nx,)
+    u_xx = self.u.u_xx(a,x,t) # (Nx,)
+    u_xxx = self.u.u_xxx(a,x,t) # (Nx,)
+
+    # Notation: write u=y and u_x=z.
+    # dF/du is then F_y, dF/du_x is F_z, etc.
+
+    F_z = grad(self.F, 1)
+
+    F_zz = grad(F_z, 1)
+    F_zy = grad(F_z)
+
+    F_zy_val, (F_zyy_val, _) = vmap(value_and_grad(F_zy, (0,1)))(u, u_x)
+    F_zz_val, (F_zzy_val, F_zzz_val) = vmap(value_and_grad(F_zz, (0,1)))(u, u_x)
+
+    F_yy_val = vmap(grad(grad((self.F))))(u, u_x)
+
+    F_yx_val = F_yy_val * u_x  + F_zy_val * u_xx
+
+    F_zxx = F_zy_val*u_xx +\
+            F_zz_val*u_xxx +\
+            F_zyy_val*u_x**2 +\
+            2*F_zzy_val*u_x*u_xx+\
+            F_zzz_val * u_xx**2
+                                
+    GdH = - F_yx_val + F_zxx
+    return GdH.reshape((len(x)))
+\end{lstlisting}

@@ -1,6 +1,6 @@
 import optuna
 import jax
-jax.config.update("jax_enable_x64", True)
+#jax.config.update("jax_enable_x64", True)
 from jax import random, vmap
 import jax.numpy as jnp
 import json
@@ -51,6 +51,7 @@ class Trainer:
         # Early stopping parameters
         self.stopped_at_epoch = self.max_epochs
         self.early_stopping = kwargs.get("early_stopping", False)
+        self.min_epochs = kwargs.get("min_epochs", 50)
         self.early_stopping_patience = kwargs.get("early_stopping_patience", 25)
         self.early_stopping_counter = self.early_stopping_patience
         self.best_val_loss = jnp.inf
@@ -73,8 +74,6 @@ class Trainer:
         
         # Lists for storing the loss history
         self.epochs_trained = 0
-        self.time_trained = 0
-        self.time_val = 0
             
         # Initialize progress bar
         self.track_progress=kwargs.get("track_progress", True)
@@ -172,7 +171,7 @@ class Trainer:
         u_pred = model.predict_whole_grid_batch(a, Trainer.x, Trainer.t)
         
         #compute the loss
-        batch_size = u.shape[0] 
+        batch_size = len(u) 
         u_norms = jnp.linalg.norm(u.reshape(batch_size,-1), 2, 1)
         diff_norms = jnp.linalg.norm((u - u_pred).reshape(batch_size,-1), 2, 1)
             
@@ -228,7 +227,7 @@ class Trainer:
         
         pbar = None
         if track_progress or (track_progress is None and self.track_progress):
-            pbar = CustomProgress(5)
+            pbar = CustomProgress(10)
             pbar.start()
             
             epochs_id = pbar.add_task("[bold green]Epochs...", total=self.max_epochs)
@@ -238,25 +237,24 @@ class Trainer:
         for epoch_idx in range(self.epochs_trained, self.epochs_trained+self.max_epochs):
             key, train_key, val_key = random.split(key, 3)
             
-            start_time = perf_counter()
             train_loss = self._train_epoch(epoch_idx, train_key, pbar)
-            self.time_trained += perf_counter() - start_time # time taken to train the epoch
             
             if (epoch_idx+1) % self.val_every_n_epoch == 0:
-                start_time = perf_counter()
                 val_loss = self._val_epoch(epoch_idx, val_key, pbar)
-                self.time_val += perf_counter() - start_time # time taken to validate the epoch
             
                 if self.trial:
                     self.trial.report(val_loss, step=epoch_idx)
                     if self.trial.should_prune():
                         raise optuna.exceptions.TrialPruned()
                 if self.early_stopping:
-                    if self._should_stop_early(val_loss):
+                    if self.min_epochs <= epoch_idx and self._should_stop_early(val_loss):
                         self.stopped_at_epoch = epoch_idx
                         if self.model.is_self_adaptive:
-                            self.λ_every_epoch = self.λ_every_epoch[:epoch_idx//self.save_λ_every_n_epoch]
+                            self.λ_history = self.λ_history[:epoch_idx//self.save_λ_every_n_epoch]
                         break
+                    
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
                 
                 
             # save λ every n epochs
@@ -315,14 +313,12 @@ class Trainer:
             total_val_loss += val_loss_batch_item
         
         val_loss_epoch = total_val_loss / self.val_batches
-        if val_loss_epoch < self.best_val_loss:
-            self.best_val_loss = val_loss_epoch
         self.val_loss_history[epoch_idx] = val_loss_epoch
         
         return val_loss_epoch
     
     def _should_stop_early(self, val_loss):
-        if val_loss < self.best_val_loss:
+        if val_loss <= self.best_val_loss:
             self.best_val_loss = val_loss
             self.early_stopping_counter = self.early_stopping_patience  # reset patience
             return False
@@ -388,9 +384,7 @@ def _from_checkpoint(path : str,
                     'train_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
                     'val_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
                     'λ_history': ocp.RestoreArgs(restore_type=np.ndarray),
-                    'epochs_trained': ocp.RestoreArgs(restore_type=int),
-                    'time_trained': ocp.RestoreArgs(restore_type=float),
-                    'time_val': ocp.RestoreArgs(restore_type=float),
+                    'epochs_trained': ocp.RestoreArgs(restore_type=int),    
                     }
                 ),
             )
@@ -409,8 +403,6 @@ def _from_checkpoint(path : str,
                     'val_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
                     'λ_history': ocp.RestoreArgs(restore_type=np.ndarray),
                     'epochs_trained': ocp.RestoreArgs(restore_type=int),
-                    'time_trained': ocp.RestoreArgs(restore_type=float),
-                    'time_val': ocp.RestoreArgs(restore_type=float),
                     }
                 ),
             )
@@ -427,8 +419,6 @@ def _from_checkpoint(path : str,
     trainer.val_loss_history_batch = np.trim_zeros(restored.training_info["val_loss_history_batch"], 'b')
 
     trainer.epochs_trained = restored.training_info["epochs_trained"]
-    trainer.time_trained = restored.training_info["time_trained"]
-    trainer.time_val = restored.training_info["time_val"]
     trainer.λ_history = jnp.array(restored.training_info["λ_history"])
     
     return trainer    

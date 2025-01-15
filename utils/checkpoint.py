@@ -71,8 +71,6 @@ def save_checkpoint(trainer : Trainer, epoch_idx : int, mngr : ocp.CheckpointMan
                 "val_loss_history_batch": trainer.val_loss_history_batch,
                 "λ_history": trainer.λ_history,
                 "epochs_trained": trainer.epochs_trained,
-                "time_trained": trainer.time_trained/trainer.epochs_trained,
-                "time_val": trainer.time_val/trainer.epochs_trained*trainer.val_every_n_epoch,
             }),
         )
     )

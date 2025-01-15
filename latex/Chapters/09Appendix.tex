@@ -1,0 +1,37 @@
+% !TeX root = ..\main.tex
+\section*{Github repository}
+\addcontentsline{toc}{chapter}{\protect\numberline{}A - Github repository} 
+
+All code files used in this document are included in the Github repository linked below.
+
+\begin{itemize}
+    \item \url{https://github.com/eirikfagerbakke/specialization_project}
+\end{itemize}
+
+\section*{Notation summary}
+\addcontentsline{toc}{chapter}{\protect\numberline{}B - Notation summary}
+\begin{table}[h!]
+\centering
+\begin{tabular}{c|c}
+\textbf{Symbol} & \textbf{Description} \\
+\hline
+\(\mathcal{S}\) & Operator mapping from input to output function space \\
+\(\mathcal{A}\) & Input function space (Banach space) \\
+\(\mathcal{U}\) & Output function space (Banach space) \\
+\(\mathcal{X}\) & Bounded spatial domain \(\subset \mathbb{R}^d\) \\
+\(\mathcal{Y}\) & Spatial-temporal domain \(\mathcal{T} \times \mathcal{X} \subset \mathbb{R}^{d+1}\) \\
+\(a\) & Input function (initial condition of the PDE) \\
+\(u\) & Output function, \(u = \mathcal{S}[a]\) \\
+\(y\) & Query point, \(y = (x,t) \in \mathbb{R}^{d+1}\) \\
+\(\{a^{(i)}, u^{(i)}\}_{i=1}^N\) & Observations of input-output pairs \\
+\(\mu\) & Probability measure supported on \(\mathcal{A}\) \\
+\(\mathcal{S}_\theta\) & Neural network approximation of the operator \(\mathcal{S}\) \\
+\(\theta\) & Parameters of the neural network \(\in \mathbb{R}^p\) \\
+\(\lambda\) & Self-adaptive weights
+\end{tabular}
+\caption{Summary of notation used in the project.}
+\label{tab:notation}
+\end{table}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

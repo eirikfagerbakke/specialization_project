@@ -1,9 +1,10 @@
 import sys
 import os
+os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 sys.path.append(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 
 import jax
-jax.config.update("jax_enable_x64", True)
+#jax.config.update("jax_enable_x64", True)
 import equinox as eqx
 import jax.numpy as jnp
 from jax import vmap
@@ -24,6 +25,7 @@ parser.add_argument('--num_epochs', type=int, default=5, help='Number of epochs'
 parser.add_argument('--load_operator', default = True, action=argparse.BooleanOptionalAction)
 parser.add_argument('--save', default = True, action=argparse.BooleanOptionalAction)
 parser.add_argument('--track_progress', default = False, action=argparse.BooleanOptionalAction)
+parser.add_argument('--early_stopping', default = True, action=argparse.BooleanOptionalAction)
 args = parser.parse_args()
 
 problem = args.problem

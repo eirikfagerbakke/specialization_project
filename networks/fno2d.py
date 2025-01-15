@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import jax
-jax.config.update("jax_enable_x64", True)
+#jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import random, vmap, grad, value_and_grad
 import equinox as eqx

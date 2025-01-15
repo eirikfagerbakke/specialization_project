@@ -1,0 +1,49 @@
+% !TeX root = ..\main.tex
+\chapter{Introduction}
+
+\section{Motivation}
+
+The use of neural networks to learn functions has in general seen a lot of success, where we learn a mapping between 
+finite-dimensional Euclidean spaces. A different and more recent approach is to learn operators, and has garnered a lot of attention \sidecite{kovachkiOperatorLearningAlgorithms2024}. 
+The first architecture with the goal of learning \textit{operators}, rather than functions, was introduced in 2019 \sidecite{luDeepONetLearningNonlinear2021,luComprehensiveFairComparison2022}.
+This was named the \textit{DeepONet}, and allowed for mapping from a discretized function to an infinite-dimensional function space.
+Since then, a plethora of other architectures and extensions have been proposed \cite{caoLNOLaplaceNeural2023,seidmanNOMADNonlinearManifold2022,xiongKoopmanNeuralOperator2024,wangImprovedArchitecturesTraining2022a,lanthalerOperatorLearningPCANet2023,prasthoferVariableInputDeepOperator2022}. 
+Perhaps most notably, a family of methods dubbed \textit{Neural Operators} were introduced in \cite{kovachkiNeuralOperatorLearning2024}. Of these, the 
+method known as the \textit{Fourier Neural Operator} (FNO) introduced in \sidecite{liFourierNeuralOperator2021,kovachkiNeuralOperatorLearning2024} has seen a lot of success.
+
+The use of operator learning allows us to learn the solution operator of a partial differential equation (PDE) directly 
+from data. It is previously known that methods informed about the underlying physics of the problem, so-called Physics-Informed Neural Networks (PINNs), can outperform purely data-driven methods \sidecite{raissiPhysicsinformedNeuralNetworks2019,karniadakisPhysicsinformedMachineLearning2021}.
+This has also been explored for Neural Operators in \sidecite{liPhysicsInformedNeuralOperator2023} and for the DeepONet in \sidecite{wangLearningSolutionOperator2021}.
+These approaches do however require that we know the underlying PDE, or at least its general form, which is not always the case.
+
+The \textit{Hamiltonian Neural Networks} (HNN) \sidecite{greydanusHamiltonianNeuralNetworks2019} 
+and \textit{Lagrangian Neural Networks} (LNN) \sidecite{cranmerLagrangianNeuralNetworks2020} instead work by strictly imposing the Hamiltonian or Lagrangian structure of the problem, respectively, to learn an ordinary differential equation (ODE).
+These approaches have been further explored for Pseudo-Hamiltonian systems in \sidecite{eidnesPseudoHamiltonianNeuralNetworks2023}, and were then extended to partial differential equations (PDEs) in \sidecite{eidnesPseudoHamiltonianNeuralNetworks2024}.
+A similar approach to the HNN, but in the context of Hamiltonian PDEs and operator learning, were also proposed in \sidecite{tanakaNeuralOperatorsMeet2024}. This paper introduces the \textit{Energy-consistent Neural Operator} (ENO), where they apply an energy-penalty to the loss function, similar to a PINN.
+The paper does however use the more traditional multilayer perceptron (MLP) architecture, instead of the operator learning methods previously mentioned.
+
+This project will focus on comparing different DeepONet and FNO architectures for solving Hamiltonian PDEs,
+and will in particular build on the work of \cite{tanakaNeuralOperatorsMeet2024} by introducing a
+\textit{Hamiltonian Operator Network} (HON). In this architecture, we will investigate the implementation and use of the different operator learning frameworks previously mentioned.
+We will also investigate imposing the Hamiltonian structure through a penalty term as in the ENO approach, or directly
+through the architecture, akin to the HNN approach.
+
+Our proposed HON architecture allows for using the existing operator learning architectures, while also imposing a Hamiltonian structure on the learned operator, with no previous knowledge of the underlying PDE.
+The learned operator will then enjoy the benefits of both the operator learning architecture and the learned Hamiltonian structure. Specifically, we will then achieve networks that are universal approximators of operators.
+The use of such an architecture also poses the problem of how one should compute the derivatives of the learned operator, which is not trivial in general, and is something we have had to address for the networks discussed in this project.
+
+\section{Problem setting}
+
+Following similar notation as \sidecite{tanakaNeuralOperatorsMeet2024} and \sidecite{kovachkiNeuralOperatorLearning2024}, we want to learn an approximation to an operator \(\mathcal{S}\), which maps from the input function space \(\mathcal{A}\) to the output function space \(\mathcal{U}\).
+\(\mathcal{A}\) and \(\mathcal{U}\) are assumed to be Banach spaces. \(\mathcal{A}\) consists of functions defined on the bounded spatial domain \(\mathcal{X} \subset \mathbb{R}^d \), and \(\mathcal{U}\) consists of functions defined on the spatial-temporal domain \(\mathcal{Y} = \mathcal{T} \times \mathcal{X} \subset \mathbb{R}^{d+1}\). 
+
+The input function is denoted by \(a : \mathcal{X} \to \mathbb{R}^{d_a}\), with \(a \in \mathcal{A}\). It may in general correspond to the initial condition, a forcing term or a coefficient in the PDE. In this project, \(a\) shall refer to the initial condition of the PDE. 
+The output function is denoted by \(u: \mathcal{Y} \to \mathbb{R}^{d_u}\), with \(u = \mathcal{S}[a]  \in \mathcal{U}\). \(\mathcal{S}\) is then the solution operator for the PDE.
+
+We assume that we have some observations \(\{a^{(i)}, u^{(i)}\}_{i=1}^N\) of the input-output pairs, where \(a^{(i)} \sim \mu\) are assumed to be i.i.d. samples drawn from some probability measure \(\mu\) supported on \(\mathcal{A}\), and \(u^{(i)} = \mathcal{S}[a^{(i)}]\) are the corresponding outputs.
+
+Our goal is then to learn a neural network that approximates this operator, i.e. \(\mathcal{S}_\theta[a] \approx \mathcal{S}[a]\), where \(\theta \in \mathbb{R}^q\) are the parameters of the neural network.
+
+We are further going to consider PDEs which have an energy functional, and we want the predictions of the neural network to preserve an approximation to the energy (or more precisely the \textit{Hamiltonian}) of the governing PDE, which we discuss in \cref{sec:HINO_theory}.
+
+A summary of the notation introduced here, and in other sections of the project, can be found in \cref{tab:notation}.

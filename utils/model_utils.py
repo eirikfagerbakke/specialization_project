@@ -4,7 +4,7 @@ from dataclasses import asdict
 from typing import Type, Any
 from jaxtyping import PyTree
 import jax
-jax.config.update("jax_enable_x64", True)
+#jax.config.update("jax_enable_x64", True)
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp

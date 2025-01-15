@@ -1,0 +1,7 @@
+*.npz
+*.npy
+latex/out
+slurm_scripts
+data
+checkpoints
+*.db

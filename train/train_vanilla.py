@@ -1,9 +1,9 @@
 import sys
 import os
+os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 sys.path.append(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 
 import jax
-jax.config.update("jax_enable_x64", True)
 import equinox as eqx
 import jax.numpy as jnp
 from jax import vmap
@@ -19,11 +19,12 @@ from optax.contrib import reduce_on_plateau
 parser = argparse.ArgumentParser(description='Hyperparameter optimization with Optuna')
 parser.add_argument('--problem', type=str, default='advection', choices=['advection', 'kdv'], help='Problem type')
 parser.add_argument('--network', type=str, default='modified_deeponet', choices=['deeponet', 'modified_deeponet', 'fno1d', 'fno2d', "fno_timestepping"], help='Network type')
-parser.add_argument('--running_on', type=str, default='local', choices=['local', 'idun'], help='Running environment')
+parser.add_argument('--running_on', type=str, default='local', choices=['local', 'idun', 'markov'], help='Running environment')
 parser.add_argument('--num_epochs', type=int, default=2000, help='Number of epochs')
 parser.add_argument('--save', default = True, action=argparse.BooleanOptionalAction)
 parser.add_argument('--track_progress', default = False, action=argparse.BooleanOptionalAction)
 parser.add_argument('--load_trainer', default = False, action=argparse.BooleanOptionalAction)
+parser.add_argument('--early_stopping', default = True, action=argparse.BooleanOptionalAction)
 args = parser.parse_args()
 
 problem = args.problem
@@ -33,6 +34,7 @@ num_epochs = args.num_epochs
 save = args.save
 track_progress = args.track_progress
 load_trainer = args.load_trainer
+early_stopping = args.early_stopping
 
 print("Running with the following settings:")
 print(f"Problem: {problem}")
@@ -42,6 +44,8 @@ print(f"Number of epochs: {num_epochs}")
 print(f"Save: {save}")
 print(f"Track progress: {track_progress}")
 print(f"Load trainer: {load_trainer}")
+print(f"Early stopping: {early_stopping}")
+
 
 if running_on == "local":
     data_path = "C:/Users/eirik/OneDrive - NTNU/5. klasse/prosjektoppgave/eirik_prosjektoppgave/data/"
@@ -51,6 +55,10 @@ elif running_on == "idun":
     data_path = "/cluster/work/eirikaf/data/"
     hparams_path = "/cluster/home/eirikaf/phlearn-summer24/eirik_prosjektoppgave/hyperparameters/"
     checkpoint_path = "/cluster/work/eirikaf/checkpoints/" if save else None
+elif running_on == "markov":
+    data_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/data/"
+    hparams_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/hyperparameters/"
+    checkpoint_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/checkpoints/" if save else None
 else:
     raise ValueError("Invalid running_on")
 
@@ -78,6 +86,9 @@ train_loader = jdl.DataLoader(jdl.ArrayDataset(a_train_s, u_train_s, asnumpy = F
 val_loader = jdl.DataLoader(jdl.ArrayDataset(a_val_s, u_val_s, asnumpy = False), batch_size=16, shuffle=True, backend='jax', drop_last=True)
 
 # AUTOPARALLELISM
+if running_on == "markov":
+    print(len(jax.devices()))
+    print(jax.devices())
 sharding_a, sharding_u, replicated = create_device_mesh()
 
 # IMPORT WANTED NETWORK ARCHITECTURE
@@ -98,6 +109,8 @@ elif network == "fno_timestepping":
     from networks.fno_timestepping import *
 else:
     raise ValueError("Invalid network")
+
+jax.config.update("jax_enable_x64", False)
 
 Trainer.compute_loss = staticmethod(compute_loss)
 
@@ -161,7 +174,10 @@ if load_trainer:
                                             save_path_prefix = network + "_" + problem + "_",
                                             sharding_a = sharding_a,
                                             sharding_u = sharding_u,
-                                            replicated = replicated,)
+                                            replicated = replicated,
+                                            early_stopping = early_stopping,
+                                            early_stopping_patience = 5,
+                                            min_epochs = 250)
 else:
     opt_state = opt.init(eqx.filter([model], eqx.is_array))
 
@@ -178,7 +194,9 @@ else:
                     save_path_prefix = network + "_" + problem + "_",
                     sharding_a = sharding_a,
                     sharding_u = sharding_u,
-                    replicated = replicated,)
+                    replicated = replicated,
+                    early_stopping = early_stopping,
+                    early_stopping_patience = 10,)
 
 # TRAIN
 trainer(num_epochs, track_progress = track_progress)
