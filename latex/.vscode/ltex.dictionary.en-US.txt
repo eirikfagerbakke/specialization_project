@@ -1,6 +1,0 @@
-DeepONet
-nonpolynomial
-PDEs
-PDE
-DeepONets
-equispaced

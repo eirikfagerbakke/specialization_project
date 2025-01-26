@@ -283,8 +283,7 @@ class Trainer:
         keys = random.split(key, self.train_batches)
         for i, (batch_a, batch_u) in enumerate(self.train_loader):
             if pbar: pbar.advance(pbar.train_id) 
-
-            batch_a, batch_u = eqx.filter_shard((batch_a, batch_u), (Trainer.sharding_a, Trainer.sharding_u))
+            if Trainer.multi_device: batch_a, batch_u = eqx.filter_shard((batch_a,batch_u), (Trainer.sharding_a, Trainer.sharding_u))
             model, opt_state, train_loss_batch = Trainer.make_step(model, opt_state, batch_a, batch_u, keys[i])
             
             train_loss_batch_item = train_loss_batch.item()
@@ -348,8 +347,109 @@ class Trainer:
             Trainer: the loaded trainer.
         """
         return _from_checkpoint(path, Network, opt, epoch_idx, **kwargs)
+    
+    @classmethod
+    def from_checkpoint2(cls, path : str,
+                    Network : Type[eqx.Module], 
+                    opt : optax.GradientTransformation = None,
+                    epoch_idx: Optional[int] = None,
+                    **kwargs):
+        """Loads a trainer from a checkpoint, using orbax.
+
+        Args:
+            Network (Type[eqx.Module])
+            opt (optax.GradientTransformation)
+            abstract_opt_state (PyTree)
+            train_loader (jdl.DataLoader)
+            val_loader (jdl.DataLoader)
+            path (str)
+            epoch_idx (Optional[int], optional): Which epoch to load. Defaults to the last saved step.
+            kwargs: Additional arguments to pass to the Trainer.
+
+        Returns:
+            Trainer: the loaded trainer.
+        """
+        return _from_checkpoint2(path, Network, opt, epoch_idx, **kwargs)
 
 def _from_checkpoint(path : str,
+                    Network : Type[eqx.Module], 
+                    opt : optax.GradientTransformation = None,
+                    epoch_idx: Optional[int] = None,
+                    Hparams : Type[dataclass] = None,
+                    **kwargs):
+    path = epath.Path(path)
+
+    # First load the hparams
+    with open(path / 'hparams.json', "rb") as f:
+        hparams = json.load(f)
+        hparams = Hparams(**hparams) if Hparams else hparams
+
+    # Initialize the model with the given hparams
+    abstract_model = Network(hparams)
+    if replicated:=kwargs.get("replicated"):
+        abstract_model = eqx.filter_shard(abstract_model, replicated)
+
+    mngr = ocp.CheckpointManager(path)
+    epoch_idx = mngr.latest_step() if epoch_idx is None else epoch_idx
+
+    if opt:
+        abstract_opt_state = opt.init(eqx.filter([abstract_model], eqx.is_array))
+        restored = mngr.restore(
+            epoch_idx, 
+            args=ocp.args.Composite(
+                model=ocp.args.StandardRestore(eqx.filter(abstract_model, eqx.is_array)),
+                opt_state=ocp.args.StandardRestore(abstract_opt_state),
+                training_info=ocp.args.PyTreeRestore(
+                    restore_args={
+                    'train_loss_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'val_loss_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'train_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'val_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'λ_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'epochs_trained': ocp.RestoreArgs(restore_type=int),
+                    'time_trained' : ocp.RestoreArgs(restore_type=float),
+                    'time_val': ocp.RestoreArgs(restore_type=float),  
+                    }
+                ),
+            )
+        )
+        opt_state = restored.opt_state
+    else:
+        restored = mngr.restore(
+            epoch_idx, 
+            args=ocp.args.Composite(
+                model=ocp.args.StandardRestore(eqx.filter(abstract_model, eqx.is_array)),
+                training_info=ocp.args.PyTreeRestore(
+                    restore_args={
+                    'train_loss_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'val_loss_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'train_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'val_loss_history_batch': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'λ_history': ocp.RestoreArgs(restore_type=np.ndarray),
+                    'epochs_trained': ocp.RestoreArgs(restore_type=int),
+                    'time_trained' : ocp.RestoreArgs(restore_type=float),
+                    'time_val': ocp.RestoreArgs(restore_type=float),
+                    }
+                ),
+            )
+        )
+        opt_state = None
+
+    model = eqx.combine(restored.model, abstract_model)
+        
+    trainer = Trainer(model, opt, opt_state, hparams = hparams, **kwargs) #save_path = path.parent
+
+    trainer.train_loss_history = np.trim_zeros(restored.training_info["train_loss_history"], 'b')
+    trainer.val_loss_history = np.trim_zeros(restored.training_info["val_loss_history"], 'b')
+    trainer.train_loss_history_batch = np.trim_zeros(restored.training_info["train_loss_history_batch"], 'b')
+    trainer.val_loss_history_batch = np.trim_zeros(restored.training_info["val_loss_history_batch"], 'b')
+
+    trainer.epochs_trained = restored.training_info["epochs_trained"]
+    trainer.λ_history = jnp.array(restored.training_info["λ_history"])
+    
+    return trainer  
+
+def _from_checkpoint2(path : str,
                     Network : Type[eqx.Module], 
                     opt : optax.GradientTransformation = None,
                     epoch_idx: Optional[int] = None,
@@ -421,4 +521,4 @@ def _from_checkpoint(path : str,
     trainer.epochs_trained = restored.training_info["epochs_trained"]
     trainer.λ_history = jnp.array(restored.training_info["λ_history"])
     
-    return trainer    
+    return trainer  

@@ -1,6 +1,5 @@
 import sys
 import os
-os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 sys.path.append(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 
 import jax
@@ -151,7 +150,7 @@ else:
     )
 
 if hparams.λ_learning_rate: # Self-adaptive weights are enabled 
-    λ_optimizer = optax.chain(optax.adam(hparams.λ_learning_rate), optax.scale(-1.))
+    λ_optimizer = optax.chain(optax.adamw(hparams.λ_learning_rate), optax.scale(-1.))
     opt = optax.multi_transform({'θ': θ_optimizer, 'λ': λ_optimizer}, param_labels=param_labels)
 else:
     opt = θ_optimizer
@@ -177,7 +176,7 @@ if load_trainer:
                                             replicated = replicated,
                                             early_stopping = early_stopping,
                                             early_stopping_patience = 5,
-                                            min_epochs = 250)
+                                            min_epochs = 300)
 else:
     opt_state = opt.init(eqx.filter([model], eqx.is_array))
 
@@ -196,7 +195,8 @@ else:
                     sharding_u = sharding_u,
                     replicated = replicated,
                     early_stopping = early_stopping,
-                    early_stopping_patience = 10,)
+                    early_stopping_patience = 5,
+                    min_epochs = 300)
 
 # TRAIN
 trainer(num_epochs, track_progress = track_progress)

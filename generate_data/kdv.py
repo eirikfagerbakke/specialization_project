@@ -64,7 +64,7 @@ def f(t, u, args):
 #############HAMILTONIANS################
 def H_energy(u, args):
     η, γ, dx = args["η"], args["γ"], args["dx"]
-    integrand = -η/6*u**3 + 0.5*γ**2*Dx(u, dx)**2
+    integrand = η/6*u**3 - 0.5*γ**2*Dx(u, dx)**2
     return dx*jnp.sum(integrand)
 
 def H_mass(u, args):

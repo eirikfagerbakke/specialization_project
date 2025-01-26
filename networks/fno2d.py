@@ -73,6 +73,28 @@ class SpectralConv2d(eqx.Module):
         # (in_channel, x, y), (in_channel, out_channel, x,y) -> (out_channel, x,y)
         return jnp.einsum("ixy,ioxy->oxy", input, weights)
     
+    def spatial_derivatives(self, v, dx):
+        channels, Nt, Nx = v.shape
+
+        # Compute 2D Fourier transform
+        v_hat = jnp.fft.rfft2(v)
+        
+        out_hat_padded = jnp.zeros((self.out_channels, Nt, Nx//2 + 1), dtype = v_hat.dtype)
+        out_hat_padded = out_hat_padded.at[:, :self.modes1 , :self.modes2].set(self.compl_mul2d(v_hat[:, :self.modes1 , :self.modes2], self.weights1))
+        out_hat_padded = out_hat_padded.at[:, -self.modes1:, :self.modes2].set(self.compl_mul2d(v_hat[:, -self.modes1: , :self.modes2], self.weights2))
+
+        # Apply differentiation in Fourier space
+        kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
+        dx_hat = 1j * kx[None, :] * out_hat_padded
+        dxx_hat = (1j * kx[None, :])**2 * out_hat_padded
+        dxxx_hat = (1j * kx[None, :])**3 * out_hat_padded
+
+        # Transform back to physical space
+        dx_val = jnp.fft.irfft2(dx_hat, s=(Nt, Nx))
+        dxx_val = jnp.fft.irfft2(dxx_hat, s=(Nt, Nx))
+        dxxx_val = jnp.fft.irfft2(dxxx_hat, s=(Nt, Nx))
+        return dx_val, dxx_val, dxxx_val
+    
     def Dx(self, v, dx):
         channels, Nt, Nx = v.shape
 
@@ -86,42 +108,6 @@ class SpectralConv2d(eqx.Module):
         # Apply differentiation in Fourier space
         kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
         dx_hat = 1j * kx[None, :] * out_hat_padded
-
-        # Transform back to physical space
-        dx_val = jnp.fft.irfft2(dx_hat, s=(Nt, Nx))
-        return dx_val
-    
-    def Dxx(self, v, dx):
-        channels, Nt, Nx = v.shape
-
-        # Compute 2D Fourier transform
-        v_hat = jnp.fft.rfft2(v)
-        
-        out_hat_padded = jnp.zeros((self.out_channels, Nt, Nx//2 + 1), dtype = v_hat.dtype)
-        out_hat_padded = out_hat_padded.at[:, :self.modes1 , :self.modes2].set(self.compl_mul2d(v_hat[:, :self.modes1 , :self.modes2], self.weights1))
-        out_hat_padded = out_hat_padded.at[:, -self.modes1:, :self.modes2].set(self.compl_mul2d(v_hat[:, -self.modes1: , :self.modes2], self.weights2))
-
-        # Apply differentiation in Fourier space
-        kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = - kx[None, :]**2 * out_hat_padded
-
-        # Transform back to physical space
-        dx_val = jnp.fft.irfft2(dx_hat, s=(Nt, Nx))
-        return dx_val
-    
-    def Dxxx(self, v, dx):
-        channels, Nt, Nx = v.shape
-
-        # Compute 2D Fourier transform
-        v_hat = jnp.fft.rfft2(v)
-        
-        out_hat_padded = jnp.zeros((self.out_channels, Nt, Nx//2 + 1), dtype = v_hat.dtype)
-        out_hat_padded = out_hat_padded.at[:, :self.modes1 , :self.modes2].set(self.compl_mul2d(v_hat[:, :self.modes1 , :self.modes2], self.weights1))
-        out_hat_padded = out_hat_padded.at[:, -self.modes1:, :self.modes2].set(self.compl_mul2d(v_hat[:, -self.modes1: , :self.modes2], self.weights2))
-
-        # Apply differentiation in Fourier space
-        kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = -1j * kx[None, :]**3 * out_hat_padded
 
         # Transform back to physical space
         dx_val = jnp.fft.irfft2(dx_hat, s=(Nt, Nx))
@@ -258,37 +244,42 @@ class FNO2d(AbstractOperatorNet):
         return bias[None,...]
     
     def last_bias_dx(self, x, t):
-        x_cos = -self.multiplier*jnp.arange(self.modes_max)[:, None] * jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
-        x_sin = self.multiplier*jnp.arange(self.modes_max)[:, None] *jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_cos_dx = -self.multiplier*jnp.arange(self.modes_max)[:, None] * jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_sin_dx = self.multiplier*jnp.arange(self.modes_max)[:, None] *jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
         t_cos = jnp.cos(2* jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
         t_sin = jnp.sin(2*jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
-        bias = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin)
-        return bias[None,...]
+        bias_dx = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin_dx)
+
+        return bias_dx[None,...]
     
-    def last_bias_dxx(self, x, t):
-        x_cos = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**2 * jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
-        x_sin = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**2 *jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+    def last_bias_spatial_derivatives(self, x, t):
+        x_cos_dx = -self.multiplier*jnp.arange(self.modes_max)[:, None] * jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_sin_dx = self.multiplier*jnp.arange(self.modes_max)[:, None] *jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_cos_dxx = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**2 * jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_sin_dxx = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**2 *jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_cos_dxxx = (self.multiplier*jnp.arange(self.modes_max)[:, None])**3 * jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
+        x_sin_dxxx = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**3 *jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
         t_cos = jnp.cos(2* jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
         t_sin = jnp.sin(2*jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
-        bias = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin)
-        return bias[None,...]
-    
-    def last_bias_dxxx(self, x, t):
-        x_cos = (self.multiplier*jnp.arange(self.modes_max)[:, None])**3 * jnp.sin(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
-        x_sin = -(self.multiplier*jnp.arange(self.modes_max)[:, None])**3 *jnp.cos(self.multiplier* jnp.arange(self.modes_max)[:, None] * x)
-        t_cos = jnp.cos(2* jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
-        t_sin = jnp.sin(2*jnp.pi * jnp.arange(self.modes_max)[:, None] * t / 5)
-        bias = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos) \
-                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin)
-        return bias[None,...]
+        bias_dx = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos_dx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin_dx)
+                
+        bias_dxx = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos_dxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin_dxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos_dxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin_dxx)
+            
+        bias_dxxx = jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[0], t_cos, x_cos_dxxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[1], t_cos, x_sin_dxxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[2], t_sin, x_cos_dxxx) \
+                + jnp.einsum('nm,nj,mi->ji', self.last_bias_coeffs[3], t_sin, x_sin_dxxx)
+
+        return bias_dx[None,...], bias_dxx[None,...], bias_dxxx[None,...]
         
     def last_bias_dt(self, x, t):
         x_cos = jnp.cos(self.multiplier * jnp.arange(self.modes_max)[:, None] * x)
@@ -338,34 +329,8 @@ class FNO2d(AbstractOperatorNet):
         
         return (d_Q_d_v_L * (d_K_L_dx + d_b_L_dx)).sum(axis=0) # (t_points, x_points), sum over hidden_channels
     
-    def Dxx(self, a, x, t):
-        v = self.stack_input(a, x, t)
-        
-        v = self.lifting(v)
-        
-        def f(v, dynamic_fno_block):
-            fno_block = eqx.combine(dynamic_fno_block, self.static_fno_blocks)
-            return fno_block(v), None
-        
-        v_Lm1, _ = jax.lax.scan(f, v, self.dynamic_fno_blocks)
-        v_L = self.last_spectral_conv(v_Lm1) + self.last_bias(x, t)
-        
-        # compute derivatives
-        # all have shape (hidden_channels, t_points, x_points)
-    
-        d_Q_dv_L = grad(lambda v_L : jnp.sum(self.projection(self.activation(v_L)))) # 1st derivative
-        d2_Q_dv_L2_val = grad(lambda v_L : jnp.sum(d_Q_dv_L(v_L)))(v_L) # 1st derivative
-        d_Q_dv_L_val = d_Q_dv_L(v_L)
-        
-        dx = x[1]-x[0]
-        d_b_L_dx = self.last_bias_dx(x, t)
-        d2_b_L_dx2 = self.last_bias_dxx(x, t)
-        d_v_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx) + d_b_L_dx
-        d2_v_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx) + d2_b_L_dx2
-    
-        return (d2_Q_dv_L2_val * (d_v_L_dx)**2 + d2_v_L_dx2*d_Q_dv_L_val).sum(axis=0)
-    
-    def Dxxx(self, a, x, t):
+    def spatial_derivatives(self, a, x, t):
+        """Computes u_x, u_xx, u_xxx in their original scale."""
         v = self.stack_input(a, x, t)
         
         v = self.lifting(v)
@@ -386,16 +351,19 @@ class FNO2d(AbstractOperatorNet):
         d_Q_dv_L_val = d_Q_dv_L(v_L)
         d2_Q_dv_L2_val = d2_Q_dv_L2(v_L)
         
-        d_b_L_dx = self.last_bias_dx(x, t)
-        d2_b_L_dx2 = self.last_bias_dxx(x, t)
-        d3_b_L_dx3 = self.last_bias_dxxx(x, t)
+        d_b_L_dx, d2_b_L_dx2, d3_b_L_dx3 = self.last_bias_spatial_derivatives(x, t)
         
         dx = x[1]-x[0]
-        d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)+d_b_L_dx
-        d2_K_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx)+d2_b_L_dx2
-        d3_K_L_dx3 = self.last_spectral_conv.Dxxx(v_Lm1, dx)+d3_b_L_dx3
+        d_K_L_dx, d2_K_L_dx2, d3_K_L_dx3 = self.last_spectral_conv.spatial_derivatives(v_Lm1, dx)
+        d_v_L_dx = d_K_L_dx + d_b_L_dx
+        d2_v_L_dx2 = d2_K_L_dx2 + d2_b_L_dx2
+        d3_v_L_dx3 = d3_K_L_dx3 + d3_b_L_dx3
   
-        return (d3_Q_dv_L3_val*d_K_L_dx**3 + 3*d2_Q_dv_L2_val*d_K_L_dx*d2_K_L_dx2+ d3_K_L_dx3*d_Q_dv_L_val).sum(axis=0)
+        u_x = (d_Q_dv_L_val * (d_v_L_dx + d_b_L_dx)).sum(axis=0)*self.u_std/self.x_std
+        u_xx = (d2_Q_dv_L2_val * d_v_L_dx**2 + d2_v_L_dx2*d_Q_dv_L_val).sum(axis=0)*self.u_std/self.x_std**2
+        u_xxx = (d3_Q_dv_L3_val*d_v_L_dx**3 + 3*d2_Q_dv_L2_val*d_v_L_dx*d2_v_L_dx2+ d3_v_L_dx3*d_Q_dv_L_val).sum(axis=0)*self.u_std/self.x_std**3
+  
+        return u_x, u_xx, u_xxx
     
     def Dt(self, a, x, t):
         v = self.stack_input(a, x, t)
@@ -434,12 +402,6 @@ class FNO2d(AbstractOperatorNet):
     
     def u_x_whole_grid(self, a, x, t):
         return self.Dx_whole_grid(a, x, t)*self.u_std/self.x_std
-    
-    def u_xx(self, a, x, t):
-        return self.Dxx(a, x, t)*self.u_std/self.x_std**2
-    
-    def u_xxx(self, a, x, t):
-        return self.Dxxx(a, x, t)*self.u_std/self.x_std**3
     
 class HparamTuning:
     def __init__(self, train_loader, val_loader, z_score_data, hparams=None, **trainer_kwargs):

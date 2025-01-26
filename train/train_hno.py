@@ -1,10 +1,9 @@
 import sys
 import os
-os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 sys.path.append(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')))
 
 import jax
-#jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 import equinox as eqx
 import jax.numpy as jnp
 from jax import vmap
@@ -16,13 +15,14 @@ import jax.experimental.mesh_utils as mesh_utils
 import jax.sharding as jshard
 import argparse
 from optax.contrib import reduce_on_plateau
+from optax.schedules import warmup_cosine_decay_schedule
 
 parser = argparse.ArgumentParser(description='Hyperparameter optimization with Optuna')
 parser.add_argument('--problem', type=str, default='advection', choices=['advection', 'kdv'], help='Problem type')
 parser.add_argument('--network', type=str, default='deeponet', choices=['deeponet', 'modified_deeponet', 'fno1d', 'fno2d', "fno_timestepping"], help='Network type')
-parser.add_argument('--running_on', type=str, default='local', choices=['local', 'idun'], help='Running environment')
-parser.add_argument('--num_epochs', type=int, default=5, help='Number of epochs')
-parser.add_argument('--load_operator', default = True, action=argparse.BooleanOptionalAction)
+parser.add_argument('--running_on', type=str, default='local', choices=['local', 'idun', 'markov'], help='Running environment')
+parser.add_argument('--num_epochs', type=int, default=2000, help='Number of epochs')
+parser.add_argument('--load_operator', default = False, action=argparse.BooleanOptionalAction)
 parser.add_argument('--save', default = True, action=argparse.BooleanOptionalAction)
 parser.add_argument('--track_progress', default = False, action=argparse.BooleanOptionalAction)
 parser.add_argument('--early_stopping', default = True, action=argparse.BooleanOptionalAction)
@@ -35,6 +35,7 @@ num_epochs = args.num_epochs
 load_operator = args.load_operator
 save = args.save
 track_progress = args.track_progress
+early_stopping = args.early_stopping
 
 print("Running with the following settings:")
 print(f"Problem: {problem}")
@@ -44,6 +45,7 @@ print(f"Number of epochs: {num_epochs}")
 print(f"Load operator: {load_operator}")
 print(f"Save: {save}")
 print(f"Track progress: {track_progress}")
+print(f"Early stopping: {early_stopping}")
 
 if running_on == "local":
     data_path = "C:/Users/eirik/OneDrive - NTNU/5. klasse/prosjektoppgave/eirik_prosjektoppgave/data/"
@@ -53,6 +55,10 @@ elif running_on == "idun":
     data_path = "/cluster/work/eirikaf/data/"
     hparams_path = "/cluster/home/eirikaf/phlearn-summer24/eirik_prosjektoppgave/hyperparameters/"
     checkpoint_path = "/cluster/work/eirikaf/checkpoints/"
+elif running_on == "markov":
+    data_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/data/"
+    hparams_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/hyperparameters/"
+    checkpoint_path = "/home/shomec/e/eirikaf/phlearn-summer24/eirik_prosjektoppgave/checkpoints/"
 else:
     raise ValueError("Invalid running_on")
 
@@ -114,7 +120,7 @@ Trainer.compute_loss = staticmethod(compute_loss)
 Trainer.evaluate = eqx.filter_jit(staticmethod(evaluate), donate="all-except-first")
 
 # IMPORT HYPERPARAMETERS
-with open(hparams_path + "energy_net_" + problem + '.json', "rb") as f:
+with open(hparams_path + "energy_net_" + problem + f"_{network}" '.json', "rb") as f:
     hparams_energy_net_dict = json.load(f) | z_score_data
     energy_net_hparams = EnergyNetHparams(**hparams_energy_net_dict)
     
@@ -136,7 +142,7 @@ ACCUMULATION_SIZE = 200 # Number of iterations to accumulate an average value:
 if network in ["fno1d", "fno2d", "fno_timestepping"]:
     θ_optimizer = optax.chain(
         conjugate_grads_transform(), # we have to conjugate the gradients for the FNO networks
-        optax.adamw(operator_net_hparams.learning_rate),
+        optax.adamw(1e-4 if load_operator else operator_net_hparams.learning_rate),
         reduce_on_plateau(
             patience=PATIENCE,
             cooldown=COOLDOWN,
@@ -147,7 +153,7 @@ if network in ["fno1d", "fno2d", "fno_timestepping"]:
     )
 else:
     θ_optimizer = optax.chain(
-        optax.adamw(operator_net_hparams.learning_rate),
+        optax.adamw(1e-4 if load_operator else operator_net_hparams.learning_rate),
         reduce_on_plateau(
             patience=PATIENCE,
             cooldown=COOLDOWN,
@@ -158,20 +164,13 @@ else:
     )
     
 φ_optimizer = optax.chain(
-    optax.adamw(energy_net_hparams.learning_rate),
-    reduce_on_plateau(
-        patience=PATIENCE,
-        cooldown=COOLDOWN,
-        factor=FACTOR,
-        rtol=RTOL,
-        accumulation_size=ACCUMULATION_SIZE,
-    ),
+    optax.adamw(warmup_cosine_decay_schedule(0, 1e-3, 1000, 25000, 1e-5))
 )
 
 if operator_net.is_self_adaptive:
-    λ_u_optimizer = optax.chain(optax.adam(operator_net_hparams.λ_learning_rate), optax.scale(-1.))
+    λ_u_optimizer = optax.chain(optax.adam(1e-4 if load_operator else operator_net_hparams.λ_learning_rate), optax.scale(-1.))
     if energy_net.is_self_adaptive:
-        λ_F_optimizer = optax.chain(optax.adam(energy_net_hparams.λ_learning_rate), optax.scale(-1.))
+        λ_F_optimizer = optax.chain(optax.adam(1e-4 if load_operator else energy_net_hparams.λ_learning_rate), optax.scale(-1.))
         opt = optax.multi_transform({'θ': θ_optimizer, 'φ': φ_optimizer, 'λ_u': λ_u_optimizer, 'λ_F': λ_F_optimizer}, param_labels=param_labels)
     else:
         opt = optax.multi_transform({'θ': θ_optimizer, 'φ': φ_optimizer, 'λ_u': λ_u_optimizer}, param_labels=param_labels)
@@ -192,6 +191,9 @@ trainer = Trainer(model,
                 sharding_u = sharding_u,
                 x = x_train_s,
                 t = t_train_s,
-                replicated = replicated)
+                replicated = replicated,
+                early_stopping = early_stopping,
+                early_stopping_patience = 5,
+                min_epochs = 300)
 
 trainer(num_epochs, track_progress = track_progress)

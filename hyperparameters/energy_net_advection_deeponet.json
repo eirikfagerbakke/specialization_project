@@ -1,0 +1,8 @@
+{
+    "depth": 3,
+    "width": 75,
+    "learning_rate": 1e-4,
+    "seed": 0,
+    "energy_penalty": 1e-4,
+    "num_query_points": 500
+}

@@ -17,6 +17,8 @@ from networks._abstract_operator_net import AbstractOperatorNet, AbstractHparams
 from optax.contrib import reduce_on_plateau
 from interpax import interp1d
 
+from traditional_solvers import Dx
+
 @dataclass(kw_only=True, frozen=True)
 class Hparams(AbstractHparams):
     # network parameters
@@ -79,7 +81,7 @@ class SpectralConv1d(eqx.Module):
         dx_val = jnp.fft.irfft(dx_hat, n=Nx)
         return dx_val
     
-    def Dxx(self, v, dx):
+    def spatial_derivatives(self, v, dx):
         channels, Nx = v.shape
 
         # Compute 2D Fourier transform
@@ -92,30 +94,15 @@ class SpectralConv1d(eqx.Module):
 
         # Apply differentiation in Fourier space
         kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = - kx**2 * out_hat_padded
+        dx_hat = 1j * kx * out_hat_padded
+        dxx_hat = (1j * kx)**2 * out_hat_padded
+        dxxx_hat = (1j * kx)**3 * out_hat_padded
 
         # Transform back to physical space
         dx_val = jnp.fft.irfft(dx_hat, n=Nx)
-        return dx_val
-    
-    def Dxxx(self, v, dx):
-        channels, Nx = v.shape
-
-        # Compute 2D Fourier transform
-        v_hat = jnp.fft.rfft(v)
-        v_hat_trunc = v_hat[:, :self.max_modes]
-        
-        out_hat = jnp.einsum("iM,ioM->oM", v_hat_trunc, self.weights)
-        out_hat_padded = jnp.zeros((self.out_channels, Nx//2 + 1), dtype = v_hat.dtype)
-        out_hat_padded = out_hat_padded.at[:, :self.max_modes].set(out_hat)
-
-        # Apply differentiation in Fourier space
-        kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = -1j* kx**3 * out_hat_padded
-
-        # Transform back to physical space
-        dx_val = jnp.fft.irfft(dx_hat, n=Nx)
-        return dx_val
+        dxx_val = jnp.fft.irfft(dxx_hat, n=Nx)
+        dxxx_val = jnp.fft.irfft(dxxx_hat, n=Nx)
+        return dx_val, dxx_val, dxxx_val
     
 class Bypass(eqx.Module):
     weights: Array
@@ -195,9 +182,10 @@ class FNOTimeStepping(AbstractOperatorNet):
         return jnp.stack([a, x_cos, x_sin])
     
     def __call__(self,a,x,t):
+        u_discrete = jnp.empty((self.max_steps, len(a)))
+        u_discrete = u_discrete.at[0].set(a)
         def step(v, _):
             # combine with spatial grid
-            v_prev = v
             v = self.stack_input(v, x)
                         
             v = self.lifting(v)
@@ -211,14 +199,14 @@ class FNOTimeStepping(AbstractOperatorNet):
             v = self.activation(self.last_spectral_conv(v) + self.last_bias)
             v = self.projection(v)[0]
             
-            return v, v_prev
+            return v, v
             
-        _, out_max = jax.lax.scan(step, a, length = self.max_steps)
+        _, scan_result = jax.lax.scan(step, a, length = self.max_steps-1)
+        u_discrete = u_discrete.at[1:].set(scan_result)
     
-        t_max = self.encode_t(jnp.linspace(0, 2, self.max_steps))
-        out = interp1d(t, t_max, out_max, method="akima")
-
-        return out
+        t_discrete = self.encode_t(jnp.linspace(0, 2, self.max_steps))
+        u = interp1d(t, t_discrete, u_discrete, method="akima", extrap=True)
+        return u
     
     def predict_whole_grid(self, a, x, t):
         """Utility function for predicting the output over the whole grid."""
@@ -229,9 +217,10 @@ class FNOTimeStepping(AbstractOperatorNet):
         return vmap(self.predict_whole_grid, (0, None, None))(a, x, t)
     
     def Dt(self, a, x, t):
+        u_discrete = jnp.empty((self.max_steps, len(a)))
+        u_discrete = u_discrete.at[0].set(a)
         def step(v, _):
             # combine with spatial grid
-            v_prev = v
             v = self.stack_input(v, x)
                         
             v = self.lifting(v)
@@ -245,15 +234,20 @@ class FNOTimeStepping(AbstractOperatorNet):
             v = self.activation(self.last_spectral_conv(v) + self.last_bias)
             v = self.projection(v)[0]
             
-            return v, v_prev
+            return v, v
             
-        _, out_max = jax.lax.scan(step, a, length = self.max_steps)
+        _, scan_result = jax.lax.scan(step, a, length = self.max_steps-1)
+        u_discrete = u_discrete.at[1:].set(scan_result)
     
-        t_max = self.encode_t(jnp.linspace(0, 2, self.max_steps))
-        out = interp1d(t, t_max, out_max, method="akima", derivative = 1)
-        return out
+        t_discrete = self.encode_t(jnp.linspace(0, 2, self.max_steps))
+        u_t = interp1d(t, t_discrete, u_discrete, method="akima", derivative=1, extrap=True)
+        return u_t
     
     def Dx(self, a, x, t):
+        dx = x[1]-x[0]
+        a_x = Dx(a, dx)
+        u_x_discrete = jnp.empty((self.max_steps, len(a)))
+        u_x_discrete = u_x_discrete.at[0].set(a_x)
         def step(v, _):
             # combine with spatial grid
             v = self.stack_input(v, x)
@@ -269,55 +263,32 @@ class FNOTimeStepping(AbstractOperatorNet):
             v_L = self.last_spectral_conv(v_Lm1) + self.last_bias
             
             d_Q_d_v_L = grad(lambda v_L : jnp.sum(self.projection(self.activation(v_L))))(v_L)
-            d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, x[1]-x[0])
+            d_v_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)
             
             v = self.projection(self.activation(v_L))[0]
-            return v, (d_Q_d_v_L * d_K_L_dx).sum(axis=0)
+            return v, (d_Q_d_v_L * d_v_L_dx).sum(axis=0)
             
-        _, out_max = jax.lax.scan(step, a, length = self.max_steps)
+        _, scan_result = jax.lax.scan(step, a, length = self.max_steps-1)
+        u_x_discrete = u_x_discrete.at[1:].set(scan_result)
     
-        t_max = self.encode_t(jnp.linspace(0, 2, self.max_steps))
-        out = interp1d(t, t_max, out_max, method="akima")
-        
+        t_discrete = self.encode_t(jnp.linspace(0, 2, self.max_steps))
+        out = interp1d(t, t_discrete, u_x_discrete, method="akima", extrap=True)
         return out
     
-    def Dxx(self, a, x, t):
-        def step(v, _):
-            # combine with spatial grid
-            v = self.stack_input(v, x)
-                        
-            v = self.lifting(v)
-            
-            def f(v, dynamic_fno_block):
-                fno_block = eqx.combine(dynamic_fno_block, self.static_fno_blocks)
-                return fno_block(v), None
-            
-            v_Lm1, _ = jax.lax.scan(f, v, self.dynamic_fno_blocks)
-            
-            v_L = self.last_spectral_conv(v_Lm1) + self.last_bias
-            
-            def sum_projection(v_L):
-                return jnp.sum(self.projection(self.activation(v_L)))
-            
-            d_Q_dv_L = grad(lambda v_L : jnp.sum(self.projection(self.activation(v_L)))) # 1st derivative
-            d2_Q_dv_L2_val = grad(lambda v_L : jnp.sum(d_Q_dv_L(v_L)))(v_L) # 2nd derivative
-            d_Q_dv_L_val = d_Q_dv_L(v_L)
-            
-            dx = x[1]-x[0]
-            d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)
-            d2_K_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx)
-            
-            v = self.projection(self.activation(v_L))[0]
-            return v, (d2_Q_dv_L2_val * (d_K_L_dx)**2 + d2_K_L_dx2*d_Q_dv_L_val).sum(axis=0)
-            
-        _, out_max = jax.lax.scan(step, a, length = self.max_steps)
-    
-        t_max = self.encode_t(jnp.linspace(0, 2, self.max_steps))
-        out = interp1d(t, t_max, out_max, method="akima")
+    def spatial_derivatives(self, a, x, t):
+        dx = x[1]-x[0]
+        a_x = Dx(a, dx)
+        a_xx = Dx(a_x, dx)
+        a_xxx = Dx(a_xx, dx)
         
-        return out
-    
-    def Dxxx(self, a, x, t):
+        Nx = len(a)
+        u_x_discrete = jnp.empty((self.max_steps, Nx))
+        u_x_discrete = u_x_discrete.at[0].set(a_x)
+        u_xx_discrete = jnp.empty((self.max_steps, Nx))
+        u_xx_discrete = u_xx_discrete.at[0].set(a_xx)
+        u_xxx_discrete = jnp.empty((self.max_steps, Nx))
+        u_xxx_discrete = u_xxx_discrete.at[0].set(a_xxx)
+        
         def step(v, _):
             # combine with spatial grid
             v = self.stack_input(v, x)
@@ -338,20 +309,25 @@ class FNOTimeStepping(AbstractOperatorNet):
             d_Q_dv_L_val = d_Q_dv_L(v_L)
             d2_Q_dv_L2_val = d2_Q_dv_L2(v_L)
             
-            dx = x[1]-x[0]
-            d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)
-            d2_K_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx)
-            d3_K_L_dx3 = self.last_spectral_conv.Dxxx(v_Lm1, dx)
+            d_v_L_dx, d2_v_L_dx2, d3_v_L_dx3 = self.last_spectral_conv.spatial_derivatives(v_Lm1, dx)
             
             v = self.projection(self.activation(v_L))[0]
-            return v, (d3_Q_dv_L3_val*d_K_L_dx**3 + 3*d2_Q_dv_L2_val*d_K_L_dx*d2_K_L_dx2+ d3_K_L_dx3*d_Q_dv_L_val).sum(axis=0)
+            u_x = (d_Q_dv_L_val*d_v_L_dx).sum(axis=0)
+            u_xx = (d2_Q_dv_L2_val*d_v_L_dx**2 + d_Q_dv_L_val*d2_v_L_dx2).sum(axis=0)
+            u_xxx = (d3_Q_dv_L3_val*d_v_L_dx**3 + 3*d2_Q_dv_L2_val*d_v_L_dx*d2_v_L_dx2+ d3_v_L_dx3*d_Q_dv_L_val).sum(axis=0)
+            return v, (u_x, u_xx, u_xxx)
             
-        _, out_max = jax.lax.scan(step, a, length = self.max_steps)
+        _, (scan_result_x, scan_result_xx, scan_result_xxx) = jax.lax.scan(step, a, length = self.max_steps-1)
+        u_x_discrete = u_x_discrete.at[1:].set(scan_result_x)
+        u_xx_discrete = u_xx_discrete.at[1:].set(scan_result_xx)
+        u_xxx_discrete = u_xxx_discrete.at[1:].set(scan_result_xxx)
     
-        t_max = self.encode_t(jnp.linspace(0, 2, self.max_steps))
-        out = interp1d(t, t_max, out_max, method="akima")
+        t_discrete = self.encode_t(jnp.linspace(0, 2, self.max_steps))
+        u_x = interp1d(t, t_discrete, u_x_discrete, method="akima", extrap=True)* self.u_std/self.x_std
+        u_xx = interp1d(t, t_discrete, u_xx_discrete, method="akima", extrap=True)* self.u_std/self.x_std**2
+        u_xxx = interp1d(t, t_discrete, u_xxx_discrete, method="akima", extrap=True)* self.u_std/self.x_std**3
         
-        return out
+        return u_x, u_xx, u_xxx
     
     def Dx_whole_grid(self, a, x, t):
         return self.Dx(a, x, t)
@@ -367,12 +343,6 @@ class FNOTimeStepping(AbstractOperatorNet):
     
     def u_x(self, a, x, t):
         return self.Dx(a, x, t)*self.u_std/self.x_std
-    
-    def u_xx(self, a, x, t):
-        return self.Dxx(a, x, t)*self.u_std/self.x_std**2
-    
-    def u_xxx(self, a, x, t):
-        return self.Dxxx(a, x, t)*self.u_std/self.x_std**3
     
     def u_x_whole_grid(self, a, x, t):
         return self.Dx_whole_grid(a, x, t)*self.u_std/self.x_std

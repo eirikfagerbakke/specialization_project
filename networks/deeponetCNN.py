@@ -24,7 +24,7 @@ class Hparams(AbstractHparams):
     number_of_sensors: int
     num_query_points: int
     
-class DeepONet(AbstractOperatorNet):
+class DeepONetCNN(AbstractOperatorNet):
     branch_net: eqx.nn.MLP
     trunk_net: eqx.nn.MLP
     multiplier: float

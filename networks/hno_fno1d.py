@@ -56,32 +56,20 @@ class HNO(eqx.Module):
         """
         
         u = self.u.decode_u(self.u(a, x, t)) # (Nx,)
-        u_x = self.u.u_x(a,x,t) # (Nx,)
-        u_xx = self.u.u_xx(a,x,t) # (Nx,)
-        u_xxx = self.u.u_xxx(a,x,t) # (Nx,)
+        u_x, u_xx, u_xxx = self.u.spatial_derivatives(a, x, t)
         
         # Notation: write u=y and u_x=z.
         # dF/du is then F_y, dF/du_x is F_z, etc.
         
-        F_z = grad(self.F, 1)
+        F_y = grad(self.F)
+        F_yz_val = vmap(grad(F_y, 1))(u, u_x)
+        F_yy_val, F_yyz_val = vmap(value_and_grad(grad(F_y), 1))(u, u_x)
+        F_zz_val, (F_yzz_val ,F_zzz_val) = vmap(value_and_grad(grad(grad(self.F, 1), 1), (0,1)))(u, u_x)
         
-        F_zz = grad(F_z, 1)
-        F_zy = grad(F_z)
-        
-        F_zy_val, (F_zyy_val, _) = vmap(value_and_grad(F_zy, (0,1)))(u, u_x)
-        F_zz_val, (F_zzy_val, F_zzz_val) = vmap(value_and_grad(F_zz, (0,1)))(u, u_x)
-        
-        F_yy_val = vmap(grad(grad((self.F))))(u, u_x)
-        
-        F_yx_val = F_yy_val * u_x  + F_zy_val * u_xx
-        
-        F_zxx = F_zy_val*u_xx +\
-                F_zz_val*u_xxx +\
-                F_zyy_val*u_x**2 +\
-                2*F_zzy_val*u_x*u_xx+\
-                F_zzz_val * u_xx**2
+        F_yx = F_yy_val * u_x  + F_yz_val * u_xx
+        F_zxx = F_yz_val*u_xx + F_zz_val*u_xxx + F_yyz_val*u_x**2 + 2*F_yzz_val*u_x*u_xx+F_zzz_val * u_xx**2
                                     
-        𝒢δℋ = - F_yx_val + F_zxx
+        𝒢δℋ = - F_yx + F_zxx
         return 𝒢δℋ.reshape((len(x)))
     
     def predict_whole_grid(self, a, x, t):
@@ -114,24 +102,8 @@ class HNO(eqx.Module):
         𝒢δℋ = jax.lax.map(eqx.filter_jit(lambda t : self(a, x, t)), t, batch_size=16) # shape (Nt, Nx)
         return 𝒢δℋ
     
-    def 𝒢δℋ_x_whole_grid(self, a, x, t):
-        """Predicts the solution at the whole grid.
-        Args:
-            a (M+1,): input function
-            x (M+1,): spatial grid
-            t (N+1,): temporal grid
-
-        Returns:
-            𝒢δℋ (N+1, M+1): prediction at the given grid points.
-        """
-        𝒢δℋ = jax.lax.map(eqx.filter_jit(lambda t : self(a, x, t)), t, batch_size=16) # shape (Nt, Nx)
-        return 𝒢δℋ
-    
     def 𝒢δℋ_whole_grid_batch(self, a, x, t):
         return vmap(self.𝒢δℋ_whole_grid, (0, None, None))(a,x,t)
-    
-    def 𝒢δℋ_x_whole_grid_batch(self, a, x, t):
-        return vmap(self.𝒢δℋ_x_whole_grid, (0, None, None))(a,x,t)
 
     def u_integrated_simpson(self, a, x, t):
         """Since the model predicts 𝒢δℋ (=u_t),
@@ -152,33 +124,6 @@ class HNO(eqx.Module):
         dt = self.u.decode_t(t[1])
         return cumulative_simpson(𝒢δℋ, dx=dt, axis=0, initial=u0)
     
-    def u_x_integrated_simpson(self, a, x, t):
-        """Since the model predicts 𝒢δℋ (=u_t),
-        we have to integrate 𝒢δℋ_x to get u.
-        Does so using cumulative_simpson from scipy.integrate.
-
-        Args:
-            a (Mp1,): initial condition
-            x (Mp1,): spatial grid
-            t (Np1,): temporal grid
-
-        Returns:
-            u (Np1, Mp1): prediction for the given grid
-        """
-        # predict 𝒢δℋ (=u_t) over the whole grid (vmap over temporal and spatial dimensions)
-        𝒢δℋ_x = self.𝒢δℋ_x_whole_grid(a, x, t)
-        u0_x = self.u.u_x(a, x, t[0])[None,:]
-        dt = self.u.decode_t(t[1])
-        return cumulative_simpson(𝒢δℋ_x, dx=dt, axis=0, initial=u0_x)
-    
-    def Hamiltonian_simpson(self, a, x, t):
-        u_integrated = self.u_integrated_simpson(a, x, t)
-        u_x_integrated = self.u_x_integrated_simpson(a, x, t)
-        
-        energy_density = self.F.predict_whole_grid(u_integrated, u_x_integrated)
-        return simpson(energy_density, dx=self.u.decode_x(x[1]), axis=1)
-    
-    
     def u_integrated_akima(self, a, x, t):
         """Since the model predicts 𝒢δℋ (=u_t),
         we have to integrate the prediction to get u.
@@ -198,32 +143,6 @@ class HNO(eqx.Module):
         𝒢δℋ_interp = Akima1DInterpolator(t, 𝒢δℋ, axis=0)
         return 𝒢δℋ_interp.antiderivative()(t) + u0
     
-    def u_x_integrated_akima(self, a, x, t):
-        """Since the model predicts 𝒢δℋ (=u_t),
-        we have to integrate 𝒢δℋ_x to get u.
-        Does so using cumulative_simpson from scipy.integrate.
-
-        Args:
-            a (Mp1,): initial condition
-            x (Mp1,): spatial grid
-            t (Np1,): temporal grid
-
-        Returns:
-            u (Np1, Mp1): prediction for the given grid
-        """
-        # predict 𝒢δℋ (=u_t) over the whole grid (vmap over temporal and spatial dimensions)
-        𝒢δℋ_x = self.𝒢δℋ_x_whole_grid(a, x, t)
-        u0_x = self.u.u_x(a, x, t[0])
-        𝒢δℋ_x_interp = Akima1DInterpolator(t, 𝒢δℋ_x, axis=0)
-        return 𝒢δℋ_x_interp.antiderivative()(t) + u0_x
-    
-    def Hamiltonian_akima(self, a, x, t):
-        u_integrated = self.u_integrated_akima(a, x, t)
-        u_x_integrated = self.u_x_integrated_akima(a, x, t)
-        
-        energy_density = self.F.predict_whole_grid(u_integrated, u_x_integrated)
-        return simpson(energy_density, dx=self.u.decode_x(x[1]), axis=1)
-    
     def u_integrated_gauss(self, a, x, t):
         """Since the model predicts 𝒢δℋ (=u_t),
         we have to integrate the prediction to get u.
@@ -238,85 +157,9 @@ class HNO(eqx.Module):
             u (Np1, Mp1): prediction for the given grid
         """
         # predict 𝒢δℋ (=u_t) for all x, at scalar t
-        𝒢δℋ = lambda t : self(a, x, t)
-        u0 = self.u.decode_u(a)
-        return gauss_legendre_4(𝒢δℋ, u0, t)
-    
-    def u_x_integrated_gauss(self, a, x, t):
-        """Since the model predicts 𝒢δℋ (=u_t),
-        we have to integrate 𝒢δℋ_x to get u.
-        Does so using cumulative_simpson from scipy.integrate.
-
-        Args:
-            a (Mp1,): initial condition
-            x (Mp1,): spatial grid
-            t (Np1,): temporal grid
-
-        Returns:
-            u (Np1, Mp1): prediction for the given grid
-        """
-        # predict 𝒢δℋ (=u_t) over spatial points, at scalar t
-        𝒢δℋ_x = lambda t : grad(self, 1)(a, x, t)
-        u0_x = self.u.u_x(a, x, t[0])
-        return gauss_legendre_4(𝒢δℋ_x, u0_x, t)
-    
-    def Hamiltonian_gauss(self, a, x, t):
-        u_integrated = self.u_integrated_gauss(a, x, t)
-        #u_x_integrated = self.u_x_integrated_gauss(a, x, t)
-        u_x_integrated = Dx(u_integrated, self.u.decode_x(x[1]), axis=1)
-        
-        energy_density = self.F.predict_whole_grid(u_integrated[:,3:-3], u_x_integrated[:,3:-3])
-        return simpson(energy_density, dx=self.u.decode_x(x[1]), axis=1)
-    
-    def u_integrated_diffrax(self, a, x, t):
-        """Since the model predicts 𝒢δℋ (=u_t),
-        we have to integrate the prediction to get u.
-        Does so using cumulative_simpson from scipy.integrate.
-
-        Args:
-            a (Mp1,): initial condition
-            x (Mp1,): spatial grid
-            t (Np1,): temporal grid
-
-        Returns:
-            u (Np1, Mp1): prediction for the given grid
-        """
-        # predict 𝒢δℋ (=u_t) for all x, at scalar t
-        𝒢δℋ = lambda t, y, args : vmap(self, (None, 0, None))(a, x, t)
- 
-        term = ODETerm(𝒢δℋ)
-        solver = Tsit5()
-        u0 = self.u.decode_u(a)
-        solution = diffeqsolve(term, solver, t0=t[0].item(), t1=t[-1].item(), dt0=t[1].item()-t[0].item(), y0=u0, saveat=SaveAt(ts=t))
-        return solution.ys
-    
-    def u_x_integrated_diffrax(self, a, x, t):
-        """Since the model predicts 𝒢δℋ (=u_t),
-        we have to integrate 𝒢δℋ_x to get u.
-        Does so using cumulative_simpson from scipy.integrate.
-
-        Args:
-            a (Mp1,): initial condition
-            x (Mp1,): spatial grid
-            t (Np1,): temporal grid
-
-        Returns:
-            u (Np1, Mp1): prediction for the given grid
-        """
-        # predict 𝒢δℋ (=u_t) over spatial points, at scalar t
-        𝒢δℋ_x = lambda t, y, args : vmap(grad(self, 1), (None, 0, None))(a, x, t)
-        term = ODETerm(𝒢δℋ_x)
-        solver = Tsit5()
-        u0_x = vmap(self.u.u_x, (None, 0, None))(a, x, t[0])
-        solution = diffeqsolve(term, solver, t0=t[0].item(), t1=t[-1].item(), dt0=t[1].item()-t[0].item(), y0=u0_x, saveat=SaveAt(ts=t))
-        return solution.ys
-    
-    def Hamiltonian_diffrax(self, a, x, t):
-        u_integrated = self.u_integrated_diffrax(a, x, t)
-        u_x_integrated = self.u_x_integrated_diffrax(a, x, t)
-        
-        energy_density = self.F.predict_whole_grid(u_integrated, u_x_integrated)
-        return simpson(energy_density, dx=self.u.decode_x(x[1]), axis=1)
+        𝒢δℋ = lambda t : self(a, x, self.u.encode_t(t))
+        u0 = self.u.decode_u(self.u(a, x, t[0]))
+        return gauss_legendre_6(𝒢δℋ, u0, self.u.decode_t(t))
     
 def compute_energy_loss(model, a, u, key):
     """Computes the loss of the model.
@@ -345,17 +188,18 @@ def compute_energy_loss(model, a, u, key):
         
         energy_loss = jnp.sqrt(jnp.sum((λ * jnp.square(u_t - 𝒢δℋ)).reshape(batch_size,-1), axis=1))
     else:
-        t_samples = model.u.encode_t(random.uniform(key, (batch_size, 10), maxval=2.)) #(batch, num_query_points)
+        t_samples = model.u.encode_t(random.uniform(key, (batch_size,), maxval=2.)) #(batch,)
     
-        𝒢δℋ = vmap(model.predict_whole_grid, (0, None, 0))(a, Trainer.x, t_samples) # (batch, num_query_points)
-        u_t = vmap(model.u.u_t_whole_grid, (0, None, 0))(a, Trainer.x, t_samples) # (batch, num_query_points) 
+        𝒢δℋ = vmap(model, (0, None, 0))(a, Trainer.x, t_samples) # (batch, num_query_points)
+        u_t = vmap(model.u.u_t, (0, None, 0))(a, Trainer.x, t_samples) # (batch, num_query_points) 
 
         energy_loss = jnp.mean(jnp.linalg.norm((u_t - 𝒢δℋ).reshape(batch_size,-1), 2, 1))
         
     return energy_loss
 
 def compute_loss(model, a, u, key):
-    return compute_operator_loss(model.u, a, u, key) + compute_energy_loss(model, a, u, key)*model.F.energy_penalty
+    operator_key, energy_key = random.split(key)
+    return compute_operator_loss(model.u, a, u, operator_key) + compute_energy_loss(model, a, u, energy_key)*model.F.energy_penalty
 
 def evaluate(model, a, u, key):
     """Evaluates the model on the validation set.
@@ -371,10 +215,9 @@ def evaluate(model, a, u, key):
         model = eqx.filter_shard(model, Trainer.replicated)
         a, u = eqx.filter_shard((a,u), (Trainer.sharding_a, Trainer.sharding_u))
     
-    model = eqx.nn.inference_mode(model)
     # each has shape (batch_size, Nt, Nx)
     u_pred = model.u.predict_whole_grid_batch(a, Trainer.x, Trainer.t)
-    𝒢δℋ = model.predict_whole_grid_batch(a, Trainer.x, Trainer.t)
+    𝒢δℋ = vmap(vmap(model, (None, None, 0)), (0, None, None))(a, Trainer.x, Trainer.t)
     u_t = vmap(model.u.u_t_whole_grid, (0, None, None))(a, Trainer.x, Trainer.t) # compute u_t in original scale
     
     #compute the loss 
@@ -389,12 +232,9 @@ def evaluate(model, a, u, key):
     loss = operator_loss + energy_loss*model.F.energy_penalty
     return loss
 
-from functools import partial
-import optimistix as optx
-@partial(jax.jit, static_argnums=(0,))
-def gauss_legendre_4(f, u0, t, rtol=1e-8, atol=1e-8, max_steps = 20):
+def gauss_legendre_6(f, u0, t):
     """
-    Integrates the ODE system using the Gauss-Legendre method of order 4.
+    Integrates the ODE system using the Gauss-Legendre method of order 6.
     Implementation follows "IV.8 Implementation of Implicit Runge-Kutta Methods" in 
     "Solving Ordinary Differential Equations II" by Hairer and Wanner
 
@@ -406,46 +246,29 @@ def gauss_legendre_4(f, u0, t, rtol=1e-8, atol=1e-8, max_steps = 20):
       args: Additional arguments to pass to f.
       rtol: Relative tolerance for the nonlinear solver.
       atol: Absolute tolerance for the nonlinear solver.
+      
 
     Returns:
       An array of solution values at the given time points.
     """
-    c = jnp.array([0.5 - jnp.sqrt(3)/6, 0.5 + jnp.sqrt(3)/6])
-    A = jnp.array([[0.25, 0.25 - jnp.sqrt(3)/6], 
-                   [0.25 + jnp.sqrt(3)/6, 0.25]])
-    d = jnp.array([-jnp.sqrt(3), jnp.sqrt(3)])
-    
     dt = t[1] - t[0]
     
+    c = jnp.array([0.5 - jnp.sqrt(15)/10, 0.5, 0.5 + jnp.sqrt(15)/10])
+    A = jnp.array([[5/36, 2/9-jnp.sqrt(15)/15, 5/36-jnp.sqrt(15)/30],
+                    [5/36+jnp.sqrt(15)/24, 2/9, 5/36-jnp.sqrt(15)/24],
+                    [5/36+jnp.sqrt(15)/30, 2/9+jnp.sqrt(15)/15, 5/36]])
+    d = jnp.array([5/3, -4/3, 5/3])
+    
+    @jax.jit
     def step(un, tn): 
-        f0 = f(tn + c[0]*dt)
-        f1 = f(tn + c[1]*dt)
-        z1 = dt*(A[0,0] * f0 + A[0,1]*f1)
-        z2 = dt*(A[1,0] * f0 + A[1,1]*f1)
-        z_next = jnp.array([z1, z2])
+        z0 = dt*(A[0,0]*f(tn + c[0]*dt) + A[0,1]*f(tn + c[1]*dt) + A[0,2]*f(tn + c[2]*dt))
+        z1 = dt*(A[1,0]*f(tn + c[0]*dt) + A[1,1]*f(tn + c[1]*dt) + A[1,2]*f(tn + c[2]*dt))
+        z2 = dt*(A[2,0]*f(tn + c[0]*dt) + A[2,1]*f(tn + c[1]*dt) + A[2,2]*f(tn + c[2]*dt))
+        z_next = jnp.array([z0, z1, z2])
+    
         u_next = un + jnp.dot(d, z_next)
-
+            
         return u_next, un
 
     _, u_arr = jax.lax.scan(step, u0, t)
-    return u_arr
-
-@partial(jax.jit, static_argnums=(0,))
-def implicit_midpoint(f, u0, dt, t, args, rtol, atol, max_steps = 20):
-    def step(carry, tn):
-        un, dt = carry
-
-        fn = f(tn, un, args)
-
-        # The update should satisfy y1 = eq(y1), i.e. y1 is a fixed point of fn
-        def eq(u, args):
-            return un + dt * f(tn+0.5*dt, 0.5*(un+u), args)
-
-        u_next_euler = un + dt * fn # Euler step as guess
-
-        solver = optx.Chord(rtol, atol)
-        u_next = optx.fixed_point(eq, solver, u_next_euler, args, max_steps = max_steps).value  # satisfies y1 == fn(y1)
-        return (u_next, dt), un
-    
-    _, u_arr = jax.lax.scan(step, (u0, dt), t)
     return u_arr

@@ -29,7 +29,7 @@ class SelfAdaptive(eqx.Module):
         self.λ_shape = hparams.λ_shape
         self.λ = jnp.ones(self.λ_shape)
         if hparams.λ_learnable:
-            self.a = jnp.ones(1)  
+            self.a = jnp.ones((1,))  
         else:
             if hparams.λ_mask == "logistic":
                 if hparams.λ_smooth_or_sharp == "smooth":

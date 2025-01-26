@@ -76,7 +76,7 @@ class SpectralConv1d(eqx.Module):
         dx_val = jnp.fft.irfft(dx_hat, n=Nx)
         return dx_val
     
-    def Dxx(self, v, dx):
+    def spatial_derivatives(self, v, dx):
         channels, Nx = v.shape
 
         # Compute 2D Fourier transform
@@ -89,30 +89,15 @@ class SpectralConv1d(eqx.Module):
 
         # Apply differentiation in Fourier space
         kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = - kx**2 * out_hat_padded
+        dx_hat = 1j * kx * out_hat_padded
+        dxx_hat = (1j * kx)**2 * out_hat_padded
+        dxxx_hat = (1j * kx)**3 * out_hat_padded
 
         # Transform back to physical space
         dx_val = jnp.fft.irfft(dx_hat, n=Nx)
-        return dx_val
-    
-    def Dxxx(self, v, dx):
-        channels, Nx = v.shape
-
-        # Compute 2D Fourier transform
-        v_hat = jnp.fft.rfft(v)
-        v_hat_trunc = v_hat[:, :self.max_modes]
-        
-        out_hat = jnp.einsum("iM,ioM->oM", v_hat_trunc, self.weights)
-        out_hat_padded = jnp.zeros((self.out_channels, Nx//2 + 1), dtype = v_hat.dtype)
-        out_hat_padded = out_hat_padded.at[:, :self.max_modes].set(out_hat)
-
-        # Apply differentiation in Fourier space
-        kx = jnp.fft.rfftfreq(Nx, dx) * 2 * jnp.pi
-        dx_hat = -1j* kx**3 * out_hat_padded
-
-        # Transform back to physical space
-        dx_val = jnp.fft.irfft(dx_hat, n=Nx)
-        return dx_val
+        dxx_val = jnp.fft.irfft(dxx_hat, n=Nx)
+        dxxx_val = jnp.fft.irfft(dxxx_hat, n=Nx)
+        return dx_val, dxx_val, dxxx_val
     
 class Bypass(eqx.Module):
     weights: Array
@@ -254,31 +239,7 @@ class FNO1d(AbstractOperatorNet):
         
         return (d_Q_d_v_L * d_K_L_dx).sum(axis=0)
     
-    def Dxx(self, a, x, t):
-        v = self.stack_input(a, x, t)
-        
-        v = self.lifting(v)
-        
-        def f(v, dynamic_fno_block):
-            fno_block = eqx.combine(dynamic_fno_block, self.static_fno_blocks)
-            return fno_block(v), None
-        
-        v_Lm1, _ = jax.lax.scan(f, v, self.dynamic_fno_blocks)
-        v_L = self.last_spectral_conv(v_Lm1) + self.last_bias
-        
-        # compute derivatives
-        # all have shape (hidden_channels, t_points, x_points)    
-        d_Q_dv_L = grad(lambda v_L : jnp.sum(self.projection(self.activation(v_L)))) # 1st derivative
-        d2_Q_dv_L2_val = grad(lambda v_L : jnp.sum(d_Q_dv_L(v_L)))(v_L) # 2nd derivative
-        d_Q_dv_L_val = d_Q_dv_L(v_L)
-        
-        dx = x[1]-x[0]
-        d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)
-        d2_K_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx)
-    
-        return (d2_Q_dv_L2_val * (d_K_L_dx)**2 + d2_K_L_dx2*d_Q_dv_L_val).sum(axis=0)
-    
-    def Dxxx(self, a, x, t):
+    def spatial_derivatives(self, a, x, t):
         v = self.stack_input(a, x, t)
         
         v = self.lifting(v)
@@ -297,11 +258,13 @@ class FNO1d(AbstractOperatorNet):
         d2_Q_dv_L2_val = d2_Q_dv_L2(v_L)
         
         dx = x[1]-x[0]
-        d_K_L_dx = self.last_spectral_conv.Dx(v_Lm1, dx)
-        d2_K_L_dx2 = self.last_spectral_conv.Dxx(v_Lm1, dx)
-        d3_K_L_dx3 = self.last_spectral_conv.Dxxx(v_Lm1, dx)
-  
-        return (d3_Q_dv_L3_val*d_K_L_dx**3 + 3*d2_Q_dv_L2_val*d_K_L_dx*d2_K_L_dx2+ d3_K_L_dx3*d_Q_dv_L_val).sum(axis=0)
+        d_v_L_dx, d2_v_L_dx2, d3_v_L_dx3 = self.last_spectral_conv.spatial_derivatives(v_Lm1, dx)
+        
+        u_x = (d_Q_dv_L_val * d_v_L_dx).sum(axis=0) * self.u_std/self.x_std
+        u_xx = (d2_Q_dv_L2_val * (d_v_L_dx)**2 + d2_v_L_dx2*d_Q_dv_L_val).sum(axis=0) * self.u_std/self.x_std**2
+        u_xxx = (d3_Q_dv_L3_val*d_v_L_dx**3 + 3*d2_Q_dv_L2_val*d_v_L_dx*d2_v_L_dx2+ d3_v_L_dx3*d_Q_dv_L_val).sum(axis=0) * self.u_std/self.x_std**3
+        
+        return u_x, u_xx, u_xxx
     
     def Dt(self, a, x, t):
         # self(a,x,t) shape : (Nx,)
